@@ -1,0 +1,29 @@
+# This repo reviews its own pull requests with pr-review. Unlike
+# examples/pr-review.yml, it loads the tooling from the PR itself, so every
+# change to the agents, prompts or formatter is exercised by its own review.
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/pr-review')
+    uses: ./.github/workflows/pr-review.yml
+    with:
+      tooling_ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', github.event.issue.number) }}
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
