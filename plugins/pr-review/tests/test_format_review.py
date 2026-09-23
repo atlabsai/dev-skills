@@ -148,3 +148,8 @@ def test_malformed_or_differently_cased_confidence_does_not_crash() -> None:
     out = fr.build_comment(findings, {}, ENV)
     assert "### 1. Cased" in out and "**Confidence:** 🟢 high" in out
     assert "### 2. List" in out
+
+
+def test_clean_pr_has_no_doubled_separator() -> None:
+    out = fr.build_comment([], {}, ENV)
+    assert "---\n\n---" not in out

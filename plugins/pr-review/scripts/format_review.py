@@ -376,8 +376,10 @@ def build_comment(
         )
         if section:
             sections.append(section)
-
-    sections.append("---")
+    # Close the findings block only if there was one; a clean PR would
+    # otherwise show two separators back to back.
+    if number > 1:
+        sections.append("---")
     sections.append(render_contours(impact, repo, branch))
     for block in (
         render_manual_tests(impact),
