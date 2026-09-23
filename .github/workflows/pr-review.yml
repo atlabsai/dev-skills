@@ -216,14 +216,18 @@ jobs:
           # validator fail with no output. Ping each distinct override
           # concurrently (the step costs one 90s ceiling at most) and fall back
           # to sonnet for any model that doesn't answer.
+          # Failure markers are numbered files holding the model name: "." or
+          # ".." pass the charset check but can't be used as a file name.
           PINGS=$(mktemp -d)
+          i=0
           for m in $(jq -r '[.[]] | unique | .[]' <<< "$VALID"); do
-            ( timeout 90 claude -p 'Reply with exactly: OK' --model "$m" >/dev/null 2>&1 || : > "$PINGS/$m" ) &
+            i=$((i + 1))
+            ( timeout 90 claude -p 'Reply with exactly: OK' --model "$m" >/dev/null 2>&1 || printf '%s' "$m" > "$PINGS/$i" ) &
           done
           wait
           for dead in "$PINGS"/*; do
             [ -e "$dead" ] || continue
-            m=$(basename "$dead")
+            m=$(cat "$dead")
             echo "::warning::model '$m' did not respond; those stages use sonnet"
             VALID=$(jq -c --arg m "$m" 'with_entries(select(.value != $m))' <<< "$VALID")
           done
