@@ -110,12 +110,12 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 1. **Don't let a model orchestrate other models in CI.** A one-shot `claude -p` session that spawned reviewers kept saying it would "continue once they finish" and then ended its turn. Nothing posted and nothing failed. Now bash waits on real process IDs, and every model call is one session that never orchestrates.
 2. **Don't use a model for formatting.** Turning JSON into markdown with an LLM took ~10 minutes per review. A Python script does it in milliseconds, identically every time.
 3. **Run the stages in one job.** GitHub bills each job's wall-clock rounded up, plus a cold start. Going from ten jobs to one cut billed time from ~29 to ~10 minutes per review.
-4. **Check the output file, not the exit code.** A session can exit 0 having skipped its final write, so each stage's contract is "the file exists and isn't empty".
+4. **Check the output file, not the exit code.** A session can exit 0 having skipped its final write, and in practice sometimes does. Each stage's contract is "the file exists and isn't empty", and a stage that breaks it is retried once.
 5. **Degrade, don't die.** A failed reviewer is listed in the comment, and a malformed stage output or config value falls back with a warning. A job-level timeout is a hard cancel that posts nothing, so per-call timeouts are sized to always fire first.
 
 ## Cost and security
 
-- **Cost:** a review is seven model sessions (five reviewers, the impact analyst and the validator), typically 5–10 minutes of wall-clock. Use `models` to move stages to a cheaper model, or `reviewers` to run fewer.
+- **Cost:** a review is seven model sessions (five reviewers, the impact analyst and the validator). With every stage on Sonnet, a ~400-line diff took about 7 minutes and $3 locally; in CI the reviewers run concurrently and a review typically takes 8–10 minutes end to end. Use `models` to move stages to a cheaper model, or `reviewers` to run fewer.
 - **Agent permissions:** agents get `Read`, `Grep`, `Glob` and `Write` only. They have no shell and no network, and the checkout does not persist git credentials.
 - **Untrusted PR content:** the model reads the PR's code and description. A malicious PR could try to steer what the review says, but not what the job can do.
 - **Who can trigger a review:** comment triggers are accepted only from owners, members and collaborators. Pull requests from forks don't receive your secrets, so they aren't reviewed automatically.
