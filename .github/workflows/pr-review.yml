@@ -1,0 +1,326 @@
+name: pr-review
+
+# Reusable workflow: multi-agent PR review with Claude Code.
+# Call it from your repo — see examples/pr-review.yml and plugins/pr-review/README.md.
+#
+# Pipeline, all in ONE job:
+#   resolve PR → checkout → capture diff
+#   → 5 reviewers + impact analyst, concurrently (6 background `claude -p` processes)
+#   → validator (re-reads the code behind every finding)
+#   → deterministic formatter (a Python script, no model) → post one comment
+#
+# Why one job: GitHub bills each job's wall-clock rounded UP to the minute, plus
+# a runner cold start each. Six ~4-minute reviewers as six jobs bill ~24 minutes
+# for ~4 minutes of work; in one job they bill the max, not the sum.
+#
+# Why bash `wait` and not an orchestrating agent: an earlier design had one
+# Claude session spawn the reviewers and wait for them. It repeatedly announced
+# it would "continue once the reviewers finish" and ended its turn — a one-shot
+# `claude -p` has nothing to resume it, so no review was posted and nothing
+# failed. Waiting is done by bash on real PIDs; every model call is a single
+# session that never orchestrates.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "PR to review. Leave empty to take it from the triggering event."
+        type: string
+        default: ""
+      trigger_phrase:
+        description: "Comment text that triggers a review (members/collaborators only)."
+        type: string
+        default: "/pr-review"
+      reviewers:
+        description: "Built-in reviewers to run, space-separated."
+        type: string
+        default: "bugs arch quality simplify prod"
+      extra_reviewers:
+        description: >-
+          Your own reviewer specs, as paths in YOUR repo, space-separated
+          (e.g. ".github/pr-review/reviewer-analytics.md"). Each runs in
+          parallel with the built-ins; its file name (minus .md) is its name.
+        type: string
+        default: ""
+      models:
+        description: >-
+          JSON object overriding the model per stage, e.g.
+          '{"impact":"opus","validator":"opus"}'. Keys: reviewer names,
+          "impact", "validator". Default for every stage: sonnet.
+        type: string
+        default: "{}"
+      runs_on:
+        description: "Runner label(s) as JSON, e.g. '\"ubuntu-latest\"' or '[\"self-hosted\",\"linux\"]'."
+        type: string
+        default: '"ubuntu-latest"'
+      claude_cli_version:
+        description: "Pinned Claude Code CLI version, so a CLI release never silently changes review behaviour."
+        type: string
+        default: "2.1.214"
+      tooling_ref:
+        description: "Ref of atlabsai/dev-skills to load agents, prompts and the formatter from. Keep it equal to the ref in your `uses:` line."
+        type: string
+        default: "v1"
+    secrets:
+      claude_code_oauth_token:
+        description: "Claude Code OAuth token (from `claude setup-token`). Provide this OR anthropic_api_key."
+        required: false
+      anthropic_api_key:
+        description: "Anthropic API key. Provide this OR claude_code_oauth_token."
+        required: false
+
+env:
+  REVIEWER_CALL_TIMEOUT: "720"
+  VALIDATOR_CALL_TIMEOUT: "600"
+  SCRATCH: ${{ github.workspace }}/scratch
+  TOOLING: ${{ github.workspace }}/tooling/plugins/pr-review
+
+jobs:
+  review:
+    # Open PRs only; comment triggers only from people with write access, so a
+    # drive-by commenter can't spend your tokens.
+    if: >-
+      inputs.pr_number != '' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft) ||
+      (github.event.issue.pull_request != null &&
+       github.event.issue.state == 'open' &&
+       contains(github.event.comment.body, inputs.trigger_phrase) &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    # Per-call ceilings fire first (fan-out 12 min + validate 10 min + ~3 min
+    # setup/post), so a slow stage degrades the review instead of the job
+    # being hard-cancelled with no comment and no debug artifact.
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          EVENT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          PR_NUMBER="${INPUT_PR:-$EVENT_PR}"
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json headRefOid,headRefName,baseRefName,title,body,state)
+          if [ "$(jq -r .state <<< "$PR_JSON")" != "OPEN" ]; then
+            echo "::error::PR #$PR_NUMBER is not open; nothing to review."
+            exit 1
+          fi
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "head_sha=$(jq -r .headRefOid <<< "$PR_JSON")"
+            echo "branch=$(jq -r .headRefName <<< "$PR_JSON")"
+            echo "base=$(jq -r .baseRefName <<< "$PR_JSON")"
+          } >> "$GITHUB_OUTPUT"
+          # Titles can contain anything; pass through a file, not an output.
+          mkdir -p "$SCRATCH/pr-context" "$SCRATCH/reviews" "$SCRATCH/logs"
+          jq --argjson t "$(date +%s)" '{title, body, started_at: $t}' <<< "$PR_JSON" > "$SCRATCH/pr-context/meta.json"
+
+      - name: Acknowledge trigger comment
+        id: ack
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+            -f content=eyes --jq .id) && echo "reaction_id=$id" >> "$GITHUB_OUTPUT" || true
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.resolve.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: repo
+
+      - uses: actions/checkout@v5
+        with:
+          repository: atlabsai/dev-skills
+          ref: ${{ inputs.tooling_ref }}
+          persist-credentials: false
+          sparse-checkout: plugins/pr-review
+          path: tooling
+
+      - name: Capture PR diff
+        working-directory: repo
+        env:
+          BASE: ${{ steps.resolve.outputs.base }}
+        run: |
+          # fetch-depth: 0 already fetched every branch; credentials are not
+          # persisted, so fetching again would fail on private repos.
+          git diff "origin/$BASE...HEAD" > "$SCRATCH/pr-context/diff.txt"
+          echo "::notice::diff: $(wc -l < "$SCRATCH/pr-context/diff.txt") lines"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Claude Code CLI
+        env:
+          VERSION: ${{ inputs.claude_cli_version }}
+        run: npm install -g "@anthropic-ai/claude-code@$VERSION"
+
+      - name: Check Claude auth
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::Pass claude_code_oauth_token or anthropic_api_key to this workflow."
+            exit 1
+          fi
+          timeout 120 claude -p 'Reply with exactly: OK' --model haiku || {
+            echo "::error::Claude CLI auth check failed. Check the secret you passed."
+            exit 1
+          }
+
+      - name: Resolve stages and models
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          EXTRA_REVIEWERS: ${{ inputs.extra_reviewers }}
+          MODELS: ${{ inputs.models }}
+        run: |
+          # A malformed `models` input degrades to defaults with a warning; it
+          # must never stop reviews from being posted.
+          if ! OVERRIDES=$(jq -ce 'if type == "object" then . else error("not an object") end' <<< "$MODELS" 2>/dev/null); then
+            echo "::warning::models input is not a JSON object; using sonnet for every stage"
+            OVERRIDES='{}'
+          fi
+          STAGES=""
+          for r in $REVIEWERS; do
+            spec="$TOOLING/agents/reviewer-$r.md"
+            [ -s "$spec" ] || { echo "::error::unknown built-in reviewer '$r'"; exit 1; }
+            STAGES+="$r=$spec"$'\n'
+          done
+          for p in $EXTRA_REVIEWERS; do
+            spec="$GITHUB_WORKSPACE/repo/$p"
+            [ -s "$spec" ] || { echo "::error::extra reviewer spec not found: $p"; exit 1; }
+            STAGES+="$(basename "$p" .md)=$spec"$'\n'
+          done
+          printf '%s' "$STAGES" > "$SCRATCH/stages.txt"
+          NAMES=$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')
+          UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES impact validator" \
+            '($o | keys) - ($n | split(" ")) | join(", ")')
+          [ -z "$UNKNOWN" ] || echo "::warning::models has unknown stage(s), ignored: $UNKNOWN"
+          # Only plausible model names (letters, digits, ._:-[]) are accepted: a
+          # value containing a newline would otherwise inject lines into $GITHUB_ENV.
+          VALID=$(jq -c 'with_entries(select(.value | type == "string" and test("^[A-Za-z0-9._:\\[\\]-]+$")))' <<< "$OVERRIDES")
+          INVALID=$(jq -rn --argjson o "$OVERRIDES" --argjson v "$VALID" '($o | keys) - ($v | keys) | join(", ")')
+          [ -z "$INVALID" ] || echo "::warning::models has invalid model names for: $INVALID; using sonnet"
+
+          # A well-formed but wrong name ("sonnett") would still make the
+          # validator fail with no output. Ping each distinct override
+          # concurrently (the step costs one 90s ceiling at most) and fall back
+          # to sonnet for any model that doesn't answer.
+          PINGS=$(mktemp -d)
+          for m in $(jq -r '[.[]] | unique | .[]' <<< "$VALID"); do
+            ( timeout 90 claude -p 'Reply with exactly: OK' --model "$m" >/dev/null 2>&1 || : > "$PINGS/$m" ) &
+          done
+          wait
+          for dead in "$PINGS"/*; do
+            [ -e "$dead" ] || continue
+            m=$(basename "$dead")
+            echo "::warning::model '$m' did not respond; those stages use sonnet"
+            VALID=$(jq -c --arg m "$m" 'with_entries(select(.value != $m))' <<< "$VALID")
+          done
+
+          for s in $NAMES impact validator; do
+            m=$(jq -r --arg s "$s" '.[$s] // "sonnet"' <<< "$VALID")
+            echo "MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$s")=$m"
+          done | tee -a "$GITHUB_ENV"
+
+      - name: Run reviewers + impact analyst in parallel
+        working-directory: repo
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+        run: |
+          set +e
+          prompt() {  # spec, out, extra
+            sed -e "s|__SPEC__|$1|" -e "s|__OUT__|$2|" -e "s|__SCRATCH__|$SCRATCH|g" \
+                -e "s|__EXTRA__|$3|" "$TOOLING/prompts/stage.md"
+          }
+          model_for() { local v; v="MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$1")"; echo "${!v:-sonnet}"; }
+
+          declare -A PIDS
+          while IFS='=' read -r name spec; do
+            timeout "$REVIEWER_CALL_TIMEOUT" claude -p "$(prompt "$spec" "$SCRATCH/reviews/$name.txt" "")" \
+              --model "$(model_for "$name")" --allowed-tools "Read,Grep,Glob,Write" \
+              > "$SCRATCH/logs/$name.log" 2>&1 &
+            PIDS[$name]=$!
+          done < "$SCRATCH/stages.txt"
+
+          timeout "$REVIEWER_CALL_TIMEOUT" claude -p "$(prompt "$TOOLING/agents/impact-analyst.md" "$SCRATCH/impact.json" "")" \
+            --model "$MODEL_IMPACT" --allowed-tools "Read,Grep,Glob,Write" \
+            > "$SCRATCH/logs/impact.log" 2>&1 &
+          PIDS[impact]=$!
+
+          for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; echo "$t exited rc=$?"; done
+
+          # The output file, not the exit code, is the contract: a session can
+          # exit 0 having skipped its final Write. The formatter lists missing
+          # reviewers in the comment; these warnings surface them on the run page.
+          while IFS='=' read -r name _; do
+            [ -s "$SCRATCH/reviews/$name.txt" ] || echo "::warning::reviewer $name produced no output"
+          done < "$SCRATCH/stages.txt"
+          [ -s "$SCRATCH/impact.json" ] || echo "::warning::impact analyst produced no output"
+
+      - name: Validate findings
+        working-directory: repo
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+        run: |
+          EXTRA="Reviewer outputs to validate are the files in $SCRATCH/reviews/, one per reviewer, named after it. A reviewer with no file failed; skip it."
+          PROMPT=$(sed -e "s|__SPEC__|$TOOLING/agents/validator.md|" -e "s|__OUT__|$SCRATCH/validated.json|" \
+            -e "s|__SCRATCH__|$SCRATCH|g" -e "s|__EXTRA__|$EXTRA|" "$TOOLING/prompts/stage.md")
+          timeout "$VALIDATOR_CALL_TIMEOUT" claude -p "$PROMPT" \
+            --model "$MODEL_VALIDATOR" --allowed-tools "Read,Grep,Glob,Write" \
+            > "$SCRATCH/logs/validator.log" 2>&1
+          echo "validator exited rc=$?"
+          grep -E '^(DISMISSED|MERGED):' "$SCRATCH/logs/validator.log" || true
+          if [ ! -s "$SCRATCH/validated.json" ]; then
+            echo "::error::validator produced no output; see the pr-review-debug artifact"
+            exit 1
+          fi
+
+      - name: Format review comment
+        working-directory: repo
+        env:
+          PR: ${{ steps.resolve.outputs.pr_number }}
+          BRANCH: ${{ steps.resolve.outputs.branch }}
+          TRIGGER: ${{ inputs.trigger_phrase }}
+        run: |
+          python3 "$TOOLING/scripts/format_review.py" \
+            --run-dir "$SCRATCH" \
+            --reviewers "$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')" \
+            --pr "$PR" --repo "$GITHUB_REPOSITORY" --branch "$BRANCH" \
+            --rerun-hint "Comment \`$TRIGGER\` to re-run this review." > /dev/null
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.resolve.outputs.pr_number }}
+        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$SCRATCH/comment.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr-review-debug
+          path: scratch
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Mark trigger result
+        if: always() && github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REACTION_ID: ${{ steps.ack.outputs.reaction_id }}
+          STATUS: ${{ job.status }}
+        run: |
+          base="repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions"
+          [ -z "$REACTION_ID" ] || gh api --method DELETE "$base/$REACTION_ID" || true
+          gh api --method POST "$base" -f content="$([ "$STATUS" = success ] && echo '+1' || echo '-1')" >/dev/null || true

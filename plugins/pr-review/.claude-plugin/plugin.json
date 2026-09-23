@@ -1,0 +1,17 @@
+{
+  "name": "pr-review",
+  "version": "1.0.0",
+  "description": "Multi-agent PR review with per-finding validation and integration-impact analysis. Runs locally via /pr-review or in CI via the reusable GitHub Actions workflow.",
+  "author": {
+    "name": "Atlabs"
+  },
+  "homepage": "https://github.com/atlabsai/dev-skills",
+  "repository": "https://github.com/atlabsai/dev-skills",
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "github-actions",
+    "multi-agent"
+  ],
+  "license": "MIT"
+}

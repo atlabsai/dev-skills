@@ -1,0 +1,41 @@
+# Copy to .github/workflows/pr-review.yml in your repo.
+# Add a CLAUDE_CODE_OAUTH_TOKEN secret (run `claude setup-token`) or an
+# ANTHROPIC_API_KEY secret, and adjust the secrets block below to match.
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR to review
+        required: true
+
+# Cancel an in-flight review of the same PR when a new one starts.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    # Skip the run entirely for comments that aren't a review request.
+    if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/pr-review')
+    uses: atlabsai/dev-skills/.github/workflows/pr-review.yml@v1
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      # Optional:
+      # models: '{"impact":"opus","validator":"opus"}'
+      # extra_reviewers: ".github/pr-review/reviewer-analytics.md"
+      # runs_on: '["self-hosted","linux"]'
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "atlabs-dev-skills",
+  "description": "Claude Code plugins for software teams, built and run in production at Atlabs.",
+  "owner": {
+    "name": "Atlabs"
+  },
+  "plugins": [
+    {
+      "name": "pr-review",
+      "description": "Multi-agent PR review: 5 specialist reviewers in parallel, a validator that re-reads the code behind every finding (dedupes, scores confidence, checks the suggested fix), and an impact analyst that maps which existing flows the change could break.",
+      "source": "./plugins/pr-review",
+      "category": "development",
+      "license": "MIT"
+    }
+  ]
+}

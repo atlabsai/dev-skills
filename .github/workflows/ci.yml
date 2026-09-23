@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Lint Python
+        run: |
+          uvx ruff@0.15.17 check plugins
+          uvx ruff@0.15.17 format --check plugins
+      - name: Test formatter
+        run: uv run --with pytest python -m pytest -q plugins/pr-review/tests
+      - name: Lint workflows
+        run: uvx --from actionlint-py actionlint .github/workflows/*.yml examples/*.yml
+      - name: Validate plugin manifests
+        run: |
+          for f in .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json; do
+            jq -e . "$f" > /dev/null || { echo "::error::invalid JSON: $f"; exit 1; }
+          done
