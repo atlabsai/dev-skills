@@ -1,6 +1,6 @@
 # pr-review
 
-Multi-agent pull request review for Claude Code, run locally with `/pr-review` or on every PR through a reusable GitHub Actions workflow.
+Multi-agent pull request review for Claude Code, run locally with `/pr-review:review` or on every PR through a reusable GitHub Actions workflow.
 
 Most AI reviewers read the lines that changed. This pipeline does two more things:
 
@@ -57,14 +57,12 @@ The sweeper re-dispatches stuck jobs and relies on the lock to skip live ones...
 Then:
 
 ```
-/pr-review              # review the current branch against the default branch
-/pr-review 412          # review PR #412 (check it out first: gh pr checkout 412)
-/pr-review 412 --post   # ...and post the review as a PR comment
+/pr-review:review              # review the current branch against the default branch
+/pr-review:review 412          # review PR #412 (check it out first: gh pr checkout 412)
+/pr-review:review 412 --post   # ...and post the review as a PR comment
 ```
 
-If your project already has its own `/pr-review` command, the plugin's version is `/pr-review:pr-review`.
-
-**In CI:** with the plugin installed, run `/setup-gh-action` in your repo. It checks the repo can use the workflow, adds `.github/workflows/pr-review.yml`, and tells you how to add the Claude secret if the repo doesn't have one yet. To do it by hand instead, copy [`templates/pr-review.yml`](templates/pr-review.yml) to `.github/workflows/` and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
+**In CI:** with the plugin installed, run `/pr-review:setup-gh-action` in your repo. It checks the repo can use the workflow, adds `.github/workflows/pr-review.yml`, and tells you how to add the Claude secret if the repo doesn't have one yet. To do it by hand instead, copy [`templates/pr-review.yml`](templates/pr-review.yml) to `.github/workflows/` and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
 
 ## Configuration
 
@@ -86,7 +84,7 @@ Inputs to the reusable workflow:
 
 A reviewer is one markdown file. Put it at `.github/pr-review/reviewer-<name>.md` in your repo:
 
-- `/pr-review` picks it up automatically.
+- `/pr-review:review` picks it up automatically.
 - In CI, list it in `extra_reviewers`.
 
 It runs in parallel with the built-ins, and the validator checks its findings like any other reviewer's. Any output works, either a JSON array in the same shape the built-in reviewers return or plain prose. The validator normalises both. Custom reviewers are where team-specific checks belong, for example "every new button fires an analytics event", "migrations must be backwards-compatible" or "every user flow change has an end-to-end test".

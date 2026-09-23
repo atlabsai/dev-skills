@@ -2,7 +2,7 @@ name: pr-review
 
 # Reusable workflow: multi-agent PR review with Claude Code.
 # Call it from your repo — see plugins/pr-review/templates/pr-review.yml, or run
-# /setup-gh-action from the pr-review plugin to add it for you.
+# /pr-review:setup-gh-action from the pr-review plugin to add it for you.
 #
 # Pipeline, all in ONE job:
 #   resolve PR → checkout → capture diff
