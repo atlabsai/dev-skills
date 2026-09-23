@@ -1,0 +1,47 @@
+# pr-review on OpenAI Codex: multi-agent PR review — https://github.com/atlabsai/dev-skills
+# Needs an OPENAI_API_KEY repo secret. Added by /pr-review:setup-gh-action,
+# or copy this file to .github/workflows/pr-review-codex.yml by hand.
+# Can run alongside the Claude version: its comment trigger is /codex-review,
+# which doesn't contain /pr-review, so each comment starts only one engine.
+
+name: PR Review (Codex)
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR to review
+        required: true
+
+# A new review of the same PR cancels the one in flight. Any other PR comment
+# gets its own group: concurrency is applied before the job's `if`, so without
+# this a plain "LGTM" would cancel a running review.
+concurrency:
+  group: >-
+    pr-review-codex-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}${{
+    github.event_name == 'issue_comment' && !contains(github.event.comment.body, '/codex-review')
+    && format('-comment-{0}', github.event.comment.id) || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/codex-review')
+    uses: atlabsai/dev-skills/.github/workflows/pr-review-codex.yml@v1
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      trigger_phrase: /codex-review
+      # Optional:
+      # model: "<codex model>"          # empty = the Codex CLI's default
+      # models: '{"validator":"<codex model>"}'
+      # extra_reviewers: ".github/pr-review/reviewer-analytics.md"
+    secrets:
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
