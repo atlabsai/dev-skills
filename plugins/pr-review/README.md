@@ -64,7 +64,7 @@ Then:
 
 If your project already has its own `/pr-review` command, the plugin's version is `/pr-review:pr-review`.
 
-**In CI:** copy [`examples/pr-review.yml`](../../examples/pr-review.yml) to `.github/workflows/` in your repo and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
+**In CI:** with the plugin installed, run `/setup-gh-action` in your repo. It checks the repo can use the workflow, adds `.github/workflows/pr-review.yml`, and tells you how to add the Claude secret if the repo doesn't have one yet. To do it by hand instead, copy [`templates/pr-review.yml`](templates/pr-review.yml) to `.github/workflows/` and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
 
 ## Configuration
 

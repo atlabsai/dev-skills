@@ -21,7 +21,7 @@ jobs:
       - name: Test formatter
         run: uv run --with pytest python -m pytest -q plugins/pr-review/tests
       - name: Lint workflows
-        run: uvx --from actionlint-py==1.7.12.25 --with shellcheck-py==0.11.0.1 actionlint .github/workflows/*.yml examples/*.yml
+        run: uvx --from actionlint-py==1.7.12.25 --with shellcheck-py==0.11.0.1 actionlint .github/workflows/*.yml plugins/*/templates/*.yml
       - name: Validate plugin manifests
         run: |
           for f in .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json; do

@@ -1,0 +1,48 @@
+# pr-review: multi-agent PR review — https://github.com/atlabsai/dev-skills
+# Needs a CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY repo secret (either;
+# `/install-github-app` in Claude Code creates one). Added by /setup-gh-action,
+# or copy this file to .github/workflows/pr-review.yml by hand.
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR to review
+        required: true
+
+# A new review of the same PR cancels the one in flight. Any other PR comment
+# gets its own group: concurrency is applied before the job's `if`, so without
+# this a plain "LGTM" would cancel a running review.
+concurrency:
+  group: >-
+    pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}${{
+    github.event_name == 'issue_comment' && !contains(github.event.comment.body, '/pr-review')
+    && format('-comment-{0}', github.event.comment.id) || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    # Skip the run entirely for comments that aren't a review request.
+    if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/pr-review')
+    uses: atlabsai/dev-skills/.github/workflows/pr-review.yml@v1
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      # Optional:
+      # models: '{"impact":"opus","validator":"opus"}'
+      # extra_reviewers: ".github/pr-review/reviewer-analytics.md"
+      # runs_on: '["self-hosted","linux"]'
+    # Whichever of the two secrets exists is used; the other is empty.
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

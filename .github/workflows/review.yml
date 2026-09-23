@@ -1,5 +1,5 @@
 # This repo reviews its own pull requests with pr-review. Unlike
-# examples/pr-review.yml, it loads the tooling from the PR itself, so every
+# plugins/pr-review/templates/pr-review.yml, it loads the tooling from the PR itself, so every
 # change to the agents, prompts or formatter is exercised by its own review.
 
 name: PR Review
@@ -10,8 +10,12 @@ on:
   issue_comment:
     types: [created]
 
+# Non-trigger comments get their own group; see the template for why.
 concurrency:
-  group: pr-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: >-
+    pr-review-${{ github.event.pull_request.number || github.event.issue.number }}${{
+    github.event_name == 'issue_comment' && !contains(github.event.comment.body, '/pr-review')
+    && format('-comment-{0}', github.event.comment.id) || '' }}
   cancel-in-progress: true
 
 permissions:
