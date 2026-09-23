@@ -115,7 +115,7 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 
 ## Cost and security
 
-- **Cost:** a review is seven model sessions (five reviewers, the impact analyst and the validator), typically 5–10 minutes of wall-clock. Use `models` to move stages to a cheaper model, or `reviewers` to run fewer.
+- **Cost:** a review is seven model sessions (five reviewers, the impact analyst and the validator). With every stage on Sonnet, a ~400-line diff took about 7 minutes and $3 locally; in CI the reviewers run concurrently and a review typically takes 8–10 minutes end to end. Use `models` to move stages to a cheaper model, or `reviewers` to run fewer.
 - **Agent permissions:** agents get `Read`, `Grep`, `Glob` and `Write` only. They have no shell and no network, and the checkout does not persist git credentials.
 - **Untrusted PR content:** the model reads the PR's code and description. A malicious PR could try to steer what the review says, but not what the job can do.
 - **Who can trigger a review:** comment triggers are accepted only from owners, members and collaborators. Pull requests from forks don't receive your secrets, so they aren't reviewed automatically.
