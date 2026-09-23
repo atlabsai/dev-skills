@@ -138,3 +138,13 @@ def test_cli_reads_the_run_dir_and_reports_missing_reviewers(
     assert "3 reviewers" in out
     assert "produced no output: arch, prod" in out
     assert (run / "comment.md").read_text() == out
+
+
+def test_malformed_or_differently_cased_confidence_does_not_crash() -> None:
+    findings = [
+        finding(title="List", confidence=["high"]),
+        finding(title="Cased", confidence="High"),
+    ]
+    out = fr.build_comment(findings, {}, ENV)
+    assert "### 1. Cased" in out and "**Confidence:** 🟢 high" in out
+    assert "### 2. List" in out

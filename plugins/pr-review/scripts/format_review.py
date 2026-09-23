@@ -58,7 +58,10 @@ UNRANKED = (len(CONFIDENCE_LEVELS), "")
 
 def confidence_level(finding: dict) -> tuple[int, str]:
     """(sort rank, badge) for a finding; unranked with no badge if absent."""
-    return CONFIDENCE_LEVELS.get(finding.get("confidence") or "", UNRANKED)
+    # str() first: a malformed value (a list, a number) must not crash the
+    # formatter and leave the PR with no comment at all.
+    level = str(finding.get("confidence") or "").strip().lower()
+    return CONFIDENCE_LEVELS.get(level, UNRANKED)
 
 
 LANG_BY_EXT = {
