@@ -238,14 +238,17 @@ jobs:
                 echo "$name=$spec=$out"
               done > "$SCRATCH/all-stages.txt"
 
-          declare -A PIDS
+          declare -A PIDS RC
           launch() {  # name, spec, output, per-call timeout, log name
             timeout "$4" claude -p "$(prompt "$2" "$3" "")" \
               --model "$(model_for "$1")" --allowed-tools "Read,Grep,Glob,Write" \
               > "$SCRATCH/logs/$5.log" 2>&1 &
             PIDS[$1]=$!
           }
-          wait_all() { for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; echo "$t exited rc=$?"; done; PIDS=(); }
+          wait_all() {
+            for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; RC[$t]=$?; echo "$t exited rc=${RC[$t]}"; done
+            PIDS=()
+          }
 
           while IFS='=' read -r name spec out; do
             launch "$name" "$spec" "$out" "$REVIEWER_CALL_TIMEOUT" "$name"
@@ -254,9 +257,14 @@ jobs:
 
           # The output file, not the exit code, is the contract: a session can
           # exit 0 having skipped its final Write, and sometimes does. Retry
-          # those once, concurrently, under a shorter ceiling.
+          # those once, concurrently, under a shorter ceiling. A stage killed
+          # by the timeout (124) already used its whole budget; a shorter
+          # second attempt won't finish either, so it isn't retried.
           while IFS='=' read -r name spec out; do
-            [ -s "$out" ] || { echo "::notice::retrying $name, which wrote no output"; launch "$name" "$spec" "$out" "$RETRY_CALL_TIMEOUT" "$name.retry"; }
+            if [ ! -s "$out" ] && [ "${RC[$name]}" != 124 ]; then
+              echo "::notice::retrying $name, which wrote no output"
+              launch "$name" "$spec" "$out" "$RETRY_CALL_TIMEOUT" "$name.retry"
+            fi
           done < "$SCRATCH/all-stages.txt"
           wait_all
 
