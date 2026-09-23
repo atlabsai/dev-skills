@@ -110,7 +110,7 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 1. **Don't let a model orchestrate other models in CI.** A one-shot `claude -p` session that spawned reviewers kept saying it would "continue once they finish" and then ended its turn. Nothing posted and nothing failed. Now bash waits on real process IDs, and every model call is one session that never orchestrates.
 2. **Don't use a model for formatting.** Turning JSON into markdown with an LLM took ~10 minutes per review. A Python script does it in milliseconds, identically every time.
 3. **Run the stages in one job.** GitHub bills each job's wall-clock rounded up, plus a cold start. Going from ten jobs to one cut billed time from ~29 to ~10 minutes per review.
-4. **Check the output file, not the exit code.** A session can exit 0 having skipped its final write, so each stage's contract is "the file exists and isn't empty".
+4. **Check the output file, not the exit code.** A session can exit 0 having skipped its final write, and in practice sometimes does. Each stage's contract is "the file exists and isn't empty", and a stage that breaks it is retried once.
 5. **Degrade, don't die.** A failed reviewer is listed in the comment, and a malformed stage output or config value falls back with a warning. A job-level timeout is a hard cancel that posts nothing, so per-call timeouts are sized to always fire first.
 
 ## Cost and security

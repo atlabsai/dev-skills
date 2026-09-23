@@ -71,6 +71,7 @@ on:
 
 env:
   REVIEWER_CALL_TIMEOUT: "720"
+  RETRY_CALL_TIMEOUT: "480"
   VALIDATOR_CALL_TIMEOUT: "600"
   SCRATCH: ${{ github.workspace }}/scratch
   TOOLING: ${{ github.workspace }}/tooling/plugins/pr-review
@@ -87,10 +88,11 @@ jobs:
        contains(github.event.comment.body, inputs.trigger_phrase) &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # Per-call ceilings fire first (fan-out 12 min + validate 10 min + ~3 min
-    # setup/post), so a slow stage degrades the review instead of the job
-    # being hard-cancelled with no comment and no debug artifact.
-    timeout-minutes: 30
+    # Per-call ceilings fire first (fan-out 12 min + one retry of stages that
+    # wrote nothing 8 min + validate 10 min + ~3 min setup/post), so a slow
+    # stage degrades the review instead of the job being hard-cancelled with
+    # no comment and no debug artifact.
+    timeout-minutes: 40
     steps:
       - name: Resolve PR
         id: resolve
@@ -228,28 +230,41 @@ jobs:
           }
           model_for() { local v; v="MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$1")"; echo "${!v:-sonnet}"; }
 
+          # Every stage as name=spec=output, so the launch and the retry below
+          # treat reviewers and the impact analyst alike.
+          { sed 's|$|=reviews|' "$SCRATCH/stages.txt"; echo "impact=$TOOLING/agents/impact-analyst.md=impact"; } \
+            | while IFS='=' read -r name spec kind; do
+                if [ "$kind" = impact ]; then out="$SCRATCH/impact.json"; else out="$SCRATCH/reviews/$name.txt"; fi
+                echo "$name=$spec=$out"
+              done > "$SCRATCH/all-stages.txt"
+
           declare -A PIDS
-          while IFS='=' read -r name spec; do
-            timeout "$REVIEWER_CALL_TIMEOUT" claude -p "$(prompt "$spec" "$SCRATCH/reviews/$name.txt" "")" \
-              --model "$(model_for "$name")" --allowed-tools "Read,Grep,Glob,Write" \
-              > "$SCRATCH/logs/$name.log" 2>&1 &
-            PIDS[$name]=$!
-          done < "$SCRATCH/stages.txt"
+          launch() {  # name, spec, output, per-call timeout, log name
+            timeout "$4" claude -p "$(prompt "$2" "$3" "")" \
+              --model "$(model_for "$1")" --allowed-tools "Read,Grep,Glob,Write" \
+              > "$SCRATCH/logs/$5.log" 2>&1 &
+            PIDS[$1]=$!
+          }
+          wait_all() { for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; echo "$t exited rc=$?"; done; PIDS=(); }
 
-          timeout "$REVIEWER_CALL_TIMEOUT" claude -p "$(prompt "$TOOLING/agents/impact-analyst.md" "$SCRATCH/impact.json" "")" \
-            --model "$MODEL_IMPACT" --allowed-tools "Read,Grep,Glob,Write" \
-            > "$SCRATCH/logs/impact.log" 2>&1 &
-          PIDS[impact]=$!
-
-          for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; echo "$t exited rc=$?"; done
+          while IFS='=' read -r name spec out; do
+            launch "$name" "$spec" "$out" "$REVIEWER_CALL_TIMEOUT" "$name"
+          done < "$SCRATCH/all-stages.txt"
+          wait_all
 
           # The output file, not the exit code, is the contract: a session can
-          # exit 0 having skipped its final Write. The formatter lists missing
-          # reviewers in the comment; these warnings surface them on the run page.
-          while IFS='=' read -r name _; do
-            [ -s "$SCRATCH/reviews/$name.txt" ] || echo "::warning::reviewer $name produced no output"
-          done < "$SCRATCH/stages.txt"
-          [ -s "$SCRATCH/impact.json" ] || echo "::warning::impact analyst produced no output"
+          # exit 0 having skipped its final Write, and sometimes does. Retry
+          # those once, concurrently, under a shorter ceiling.
+          while IFS='=' read -r name spec out; do
+            [ -s "$out" ] || { echo "::notice::retrying $name, which wrote no output"; launch "$name" "$spec" "$out" "$RETRY_CALL_TIMEOUT" "$name.retry"; }
+          done < "$SCRATCH/all-stages.txt"
+          wait_all
+
+          # Still missing: a reviewer is listed as failed in the comment; a
+          # missing impact analysis posts the review without contours.
+          while IFS='=' read -r name _ out; do
+            [ -s "$out" ] || echo "::warning::$name produced no output"
+          done < "$SCRATCH/all-stages.txt"
 
       - name: Validate findings
         working-directory: repo
