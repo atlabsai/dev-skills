@@ -1,6 +1,6 @@
 # pr-review: multi-agent PR review — https://github.com/atlabsai/dev-skills
 # Needs a CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY repo secret (either;
-# `/install-github-app` in Claude Code creates one). Added by /setup-gh-action,
+# `/install-github-app` in Claude Code creates one). Added by /pr-review:setup-gh-action,
 # or copy this file to .github/workflows/pr-review.yml by hand.
 
 name: PR Review
