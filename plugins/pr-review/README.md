@@ -119,7 +119,7 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 
 "Addressed" means a later commit fixed the flagged issue. That doesn't prove the review caused the fix.
 
-**Behavior parity, and why two stages default to Opus (v1.1).** A large migration PR in the same repo passed over a thousand tests and this review, then shipped about 25 unintended behavior changes that hurt users. None were bugs in the new code taken alone; each was a difference from the old code. We rebuilt the behavior-parity reviewer against that PR, blind (it never saw the list of known regressions), and measured it:
+**Behavior parity, and why two stages default to Opus (v1.1).** A large migration PR passed over a thousand tests and this review, yet made about 25 unintended behavior changes that neither caught. None were bugs in the new code taken alone; each was a difference from the old code. We rebuilt the behavior-parity reviewer against that PR, blind (it never saw the list of known regressions), and measured it:
 
 - **One session on the whole 24k-line diff found 0 of the ~25.** It stopped after ~20 tool calls. Splitting the diff into per-area shards is now built in.
 - **Sharded, on Sonnet: about 1 of 9 high-severity regressions.** Its findings were real but low-value.
