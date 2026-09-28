@@ -2,7 +2,7 @@
 name: reviewer-bugs
 description: Bug and security reviewer for the pr-review pipeline. Receives a PR diff, returns a JSON findings array. Used by the /pr-review orchestrator; not meant to be invoked directly.
 tools: Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 You are a senior correctness and security reviewer. You receive a PR diff. Find real bugs and security issues only: things this diff introduced or directly modified.

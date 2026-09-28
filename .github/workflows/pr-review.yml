@@ -6,7 +6,8 @@ name: pr-review
 #
 # Pipeline, all in ONE job:
 #   resolve PR → checkout → capture diff
-#   → 5 reviewers + impact analyst, concurrently (6 background `claude -p` processes)
+#   → 6 reviewers + impact analyst, concurrently (background `claude -p` processes;
+#     on a large PR the behavior-parity reviewer runs as up to 8 area shards)
 #   → validator (re-reads the code behind every finding)
 #   → deterministic formatter (a Python script, no model) → post one comment
 #
@@ -35,7 +36,7 @@ on:
       reviewers:
         description: "Built-in reviewers to run, space-separated."
         type: string
-        default: "bugs arch quality simplify prod"
+        default: "bugs arch quality simplify prod parity"
       extra_reviewers:
         description: >-
           Your own reviewer specs, as paths in YOUR repo, space-separated
@@ -47,7 +48,9 @@ on:
         description: >-
           JSON object overriding the model per stage, e.g.
           '{"impact":"opus","validator":"opus"}'. Keys: reviewer names,
-          "impact", "validator". Default for every stage: sonnet.
+          "impact", "validator". Defaults: opus for "bugs" and "parity"
+          (measured: on sonnet both missed nearly every known bug in a
+          blind eval), sonnet for every other stage.
         type: string
         default: "{}"
       runs_on:
@@ -61,7 +64,7 @@ on:
       tooling_ref:
         description: "Ref of atlabsai/dev-skills to load agents, prompts and the formatter from. Keep it equal to the ref in your `uses:` line."
         type: string
-        default: "v1"
+        default: "v1.1"
     secrets:
       claude_code_oauth_token:
         description: "Claude Code OAuth token (from `claude setup-token`). Provide this OR anthropic_api_key."
@@ -155,6 +158,16 @@ jobs:
           # persisted, so fetching again would fail on private repos.
           git diff "origin/$BASE...HEAD" > "$SCRATCH/pr-context/diff.txt"
           echo "::notice::diff: $(wc -l < "$SCRATCH/pr-context/diff.txt") lines"
+          MERGE_BASE=$(git merge-base "origin/$BASE" HEAD)
+          # Pre-change copies of modified files (agents have Read, not git), and
+          # the parity shard plan: 0 = run parity unsharded.
+          # Either failing only degrades parity (no BASE_DIR, or unsharded); never the review.
+          timeout 300 python3 "$TOOLING/scripts/snapshot_base.py" --base "$MERGE_BASE" --out "$SCRATCH/pr-context/base" \
+            || { echo "::warning::snapshot_base failed; continuing without BASE_DIR"; rm -rf "$SCRATCH/pr-context/base"; }
+          timeout 300 python3 "$TOOLING/scripts/plan_parity_shards.py" --base "$MERGE_BASE" \
+            --out "$SCRATCH/pr-context/parity-shards" > "$SCRATCH/parity-shards.txt" \
+            || echo 0 > "$SCRATCH/parity-shards.txt"
+          echo "::notice::parity shards: $(cat "$SCRATCH/parity-shards.txt")"
 
       - uses: actions/setup-node@v4
         with:
@@ -192,10 +205,15 @@ jobs:
             OVERRIDES='{}'
           fi
           STAGES=""
+          SHARDS=$(cat "$SCRATCH/parity-shards.txt" 2>/dev/null || echo 0)
           for r in $REVIEWERS; do
             spec="$TOOLING/agents/reviewer-$r.md"
             [ -s "$spec" ] || { echo "::error::unknown built-in reviewer '$r'"; exit 1; }
-            STAGES+="$r=$spec"$'\n'
+            if [ "$r" = parity ] && [ "${SHARDS:-0}" -gt 0 ] 2>/dev/null; then
+              for k in $(seq 1 "$SHARDS"); do STAGES+="parity_$k=$spec"$'\n'; done
+            else
+              STAGES+="$r=$spec"$'\n'
+            fi
           done
           for p in $EXTRA_REVIEWERS; do
             spec="$GITHUB_WORKSPACE/repo/$p"
@@ -204,7 +222,10 @@ jobs:
           done
           printf '%s' "$STAGES" > "$SCRATCH/stages.txt"
           NAMES=$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')
-          UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES impact validator" \
+          # Only the parity shards fold back to a base name; a custom reviewer
+          # called e.g. "checks_2" keeps its own name.
+          BASES=$(for n in $NAMES; do [[ "$n" =~ ^parity_[0-9]+$ ]] && echo parity; done | sort -u | tr '\n' ' ')
+          UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES $BASES impact validator" \
             '($o | keys) - ($n | split(" ")) | join(", ")')
           [ -z "$UNKNOWN" ] || echo "::warning::models has unknown stage(s), ignored: $UNKNOWN"
           # Only plausible model names (letters, digits, ._:-[]) are accepted: a
@@ -213,8 +234,11 @@ jobs:
           INVALID=$(jq -rn --argjson o "$OVERRIDES" --argjson v "$VALID" '($o | keys) - ($v | keys) | join(", ")')
           [ -z "$INVALID" ] || echo "::warning::models has invalid model names for: $INVALID; using sonnet"
 
+          DEFAULTS='{"bugs":"opus","parity":"opus"}'
           for s in $NAMES impact validator; do
-            m=$(jq -r --arg s "$s" '.[$s] // "sonnet"' <<< "$VALID")
+            b="$s"; [[ "$s" =~ ^parity_[0-9]+$ ]] && b=parity  # shards take the "parity" override and default
+            m=$(jq -r --arg s "$s" --arg b "$b" --argjson d "$DEFAULTS" \
+              '.[$s] // .[$b] // $d[$b] // "sonnet"' <<< "$VALID")
             echo "MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$s")=$m"
           done | tee -a "$GITHUB_ENV"
 
@@ -241,7 +265,12 @@ jobs:
 
           declare -A PIDS RC
           launch() {  # name, spec, output, per-call timeout, log name
-            timeout "$4" claude -p "$(prompt "$2" "$3" "")" \
+            local extra=""
+            if [[ "$1" =~ ^parity_([0-9]+)$ ]]; then
+              local k="${BASH_REMATCH[1]}" dir="$SCRATCH/pr-context/parity-shards"
+              extra="SHARD: you are parity shard $k. Your shard diff is $dir/$k.diff; review only the behaviors in it. The file list is in $dir/SHARDS.txt."
+            fi
+            timeout "$4" claude -p "$(prompt "$2" "$3" "$extra")" \
               --model "$(model_for "$1")" --allowed-tools "Read,Grep,Glob,Write" \
               > "$SCRATCH/logs/$5.log" 2>&1 &
             PIDS[$1]=$!

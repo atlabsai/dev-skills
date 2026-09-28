@@ -47,6 +47,17 @@ Findings from several reviewers. Some return JSON arrays, some return prose:
 
 10. **Merge duplicates.** Reviewers overlap (an N+1 query is in scope for the bug, prod and simplify reviewers), so one defect often arrives two or three times. Two findings are duplicates when fixing one would fix the other — same root cause, whatever the wording, reviewer or exact line. Merge them into ONE finding with the highest (calibrated) severity, the most precise explanation and the best fix; if the defect spans several sites, name each site in `explanation`. Do NOT merge findings that merely share a file or a category — two different N+1 queries are two findings.
 
+## Behavior-parity findings (`source: behavior_parity`)
+
+These come from `reviewer-parity`. On a large PR they come from its shards, whose output files are named `parity_<n>`. Each finding claims that code which existed before now behaves differently. Validate them differently from bug findings:
+
+- **Verify both sides.** Read the old code from BASE_DIR, the pre-change file tree your harness prompt names (`BASE_DIR/INDEX.txt` maps renames). For a predecessor this PR left unchanged, read the working-tree copy. Read the new code in the working tree. Confirm that the claimed INPUT produces the claimed BEFORE and AFTER outcomes.
+- **Dismiss** only if the two behaviors are equivalent for that input, the reviewer misread a side, or the old behavior never existed.
+- **Never dismiss because the change looks deliberate or is "by design".** A declared change stays as a `note`, so the before/after is on record. An undeclared change keeps its severity. Check the DECLARED line against the PR description yourself. A generic statement of intent ("migrate X to Y") does not declare a specific side effect.
+- `pre_existing` does not apply: a parity finding is about a difference the diff introduced. If the behavior did not change, dismiss the finding.
+- Keep any "Behavior-parity review incomplete" finding as `confirmed`, severity `note`.
+- Keep the BEFORE / AFTER / INPUT / IMPACT / DECLARED structure in `explanation`, and correct its contents where they are wrong.
+
 ## Output
 
 First print one line per dismissed finding and one per merge:
@@ -60,7 +71,7 @@ Then return ONLY a raw JSON array of the retained findings (confirmed, edge_case
 
 ```
 {
-  "source": "bug_security | architecture | code_quality | simplify | prod_readiness",
+  "source": "bug_security | architecture | code_quality | simplify | prod_readiness | behavior_parity",
   "title": "concise title",
   "file": "relative/path/to/file",
   "line_start": 0,
@@ -77,7 +88,7 @@ Then return ONLY a raw JSON array of the retained findings (confirmed, edge_case
 }
 ```
 
-Source mapping: reviewer-bugs → `bug_security`, reviewer-arch → `architecture`, reviewer-quality → `code_quality`, reviewer-simplify → `simplify`, reviewer-prod → `prod_readiness`. For a reviewer you don't recognise (a custom one), use its name.
+Source mapping: reviewer-bugs → `bug_security`, reviewer-arch → `architecture`, reviewer-quality → `code_quality`, reviewer-simplify → `simplify`, reviewer-prod → `prod_readiness`, reviewer-parity and its `parity_<n>` shards → `behavior_parity`. For a reviewer you don't recognise (a custom one), use its name.
 
 Severity for prose findings that don't state one: security, data loss or broken functionality → `critical` (then apply step 5); performance, risky patterns, missing error handling → `warning`; style and suggestions → `note`.
 
