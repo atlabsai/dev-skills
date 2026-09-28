@@ -28,7 +28,7 @@ on:
       reviewers:
         description: "Built-in reviewers to run, space-separated."
         type: string
-        default: "bugs arch quality simplify prod"
+        default: "bugs arch quality simplify prod parity"
       extra_reviewers:
         description: "Your own reviewer specs, as paths in YOUR repo, space-separated."
         type: string
@@ -54,7 +54,7 @@ on:
       tooling_ref:
         description: "Ref of atlabsai/dev-skills to load agents, prompts and scripts from. Keep it equal to the ref in your `uses:` line."
         type: string
-        default: "v1"
+        default: "v1.1"
     secrets:
       openai_api_key:
         description: "OpenAI API key used by the Codex CLI."
@@ -141,6 +141,14 @@ jobs:
           # persisted, so fetching again would fail on private repos.
           git diff "origin/$BASE...HEAD" > "$SCRATCH/pr-context/diff.txt"
           echo "::notice::diff: $(wc -l < "$SCRATCH/pr-context/diff.txt") lines"
+          MERGE_BASE=$(git merge-base "origin/$BASE" HEAD)
+          # Pre-change copies of modified files (the sandbox is read-only and
+          # stages shouldn't need git), and the parity shard plan: 0 = unsharded.
+          python3 "$TOOLING/scripts/snapshot_base.py" --base "$MERGE_BASE" --out "$SCRATCH/pr-context/base"
+          python3 "$TOOLING/scripts/plan_parity_shards.py" --base "$MERGE_BASE" \
+            --out "$SCRATCH/pr-context/parity-shards" > "$SCRATCH/parity-shards.txt" \
+            || echo 0 > "$SCRATCH/parity-shards.txt"
+          echo "::notice::parity shards: $(cat "$SCRATCH/parity-shards.txt")"
 
       - uses: actions/setup-node@v4
         with:
@@ -212,10 +220,15 @@ jobs:
             OVERRIDES='{}'
           fi
           STAGES=""
+          SHARDS=$(cat "$SCRATCH/parity-shards.txt" 2>/dev/null || echo 0)
           for r in $REVIEWERS; do
             spec="$TOOLING/agents/reviewer-$r.md"
             [ -s "$spec" ] || { echo "::error::unknown built-in reviewer '$r'"; exit 1; }
-            STAGES+="$r=$spec"$'\n'
+            if [ "$r" = parity ] && [ "${SHARDS:-0}" -gt 0 ] 2>/dev/null; then
+              for k in $(seq 1 "$SHARDS"); do STAGES+="parity_$k=$spec"$'\n'; done
+            else
+              STAGES+="$r=$spec"$'\n'
+            fi
           done
           for p in $EXTRA_REVIEWERS; do
             spec="$GITHUB_WORKSPACE/repo/$p"
@@ -224,7 +237,8 @@ jobs:
           done
           printf '%s' "$STAGES" > "$SCRATCH/stages.txt"
           NAMES=$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')
-          UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES impact validator" \
+          BASES=$(for n in $NAMES; do echo "${n%_[0-9]*}"; done | sort -u | tr '\n' ' ')
+          UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES $BASES impact validator" \
             '($o | keys) - ($n | split(" ")) | join(", ")')
           [ -z "$UNKNOWN" ] || echo "::warning::models has unknown stage(s), ignored: $UNKNOWN"
           # Only plausible model names are accepted: a value with a newline
@@ -235,7 +249,8 @@ jobs:
             MODEL=""
           fi
           for s in $NAMES impact validator; do
-            m=$(jq -r --arg s "$s" '.[$s] | select(type == "string")' <<< "$OVERRIDES")
+            b="${s%_[0-9]*}"  # parity_3 takes the "parity" override
+            m=$(jq -r --arg s "$s" --arg b "$b" '(.[$s] // .[$b]) | select(type == "string")' <<< "$OVERRIDES")
             if [ -n "$m" ] && ! [[ "$m" =~ $NAME_RE ]]; then
               echo "::warning::models.$s is not a valid model name; ignoring it" >&2
               m=""
@@ -264,8 +279,12 @@ jobs:
 
           declare -A PIDS RC
           launch() {  # name, spec, output, per-call timeout, log name
-            local args; mapfile -t args < <(model_args "$1")
-            timeout "$4" codex exec "${args[@]}" --ephemeral -o "$3" "$(prompt "$2" "")" \
+            local args extra=""; mapfile -t args < <(model_args "$1")
+            if [[ "$1" =~ ^parity_([0-9]+)$ ]]; then
+              local k="${BASH_REMATCH[1]}" dir="$SCRATCH/pr-context/parity-shards"
+              extra="SHARD: you are parity shard $k. Your shard diff is $dir/$k.diff; review only the behaviors in it. The file list is in $dir/SHARDS.txt."
+            fi
+            timeout "$4" codex exec "${args[@]}" --ephemeral -o "$3" "$(prompt "$2" "$extra")" \
               > "$SCRATCH/logs/$5.log" 2>&1 &
             PIDS[$1]=$!
           }

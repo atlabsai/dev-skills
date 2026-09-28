@@ -8,6 +8,11 @@ at the PR head. The full unified diff for this PR is at
 __SCRATCH__/pr-context/diff.txt (page through it if it is large). The
 PR title and body are in __SCRATCH__/pr-context/meta.json.
 
+BASE_DIR is __SCRATCH__/pr-context/base: the pre-change version of every
+file this PR modifies, deletes or renames, at its base-branch path.
+__SCRATCH__/pr-context/base/INDEX.txt lists them (`M path`, `D path`,
+`R old -> new`).
+
 __EXTRA__
 
 The specification describes what to return (a JSON array, a JSON

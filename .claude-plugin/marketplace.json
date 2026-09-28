@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "pr-review",
-      "description": "Multi-agent PR review: 5 specialist reviewers in parallel, a validator that re-reads the code behind every finding (dedupes, scores confidence, checks the suggested fix), and an impact analyst that maps which existing flows the change could break.",
+      "description": "Multi-agent PR review: 6 specialist reviewers in parallel, including a behavior-parity reviewer that compares old and new code, a validator that re-reads the code behind every finding (dedupes, scores confidence, checks the suggested fix), and an impact analyst that maps which existing flows the change could break.",
       "source": "./plugins/pr-review",
       "category": "development",
       "license": "MIT"

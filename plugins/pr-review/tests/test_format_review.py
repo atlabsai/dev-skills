@@ -140,6 +140,25 @@ def test_cli_reads_the_run_dir_and_reports_missing_reviewers(
     assert (run / "comment.md").read_text() == out
 
 
+def test_parity_shards_count_as_one_reviewer_and_fail_by_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = tmp_path / "run"
+    (run / "pr-context").mkdir(parents=True)
+    (run / "reviews").mkdir()
+    (run / "pr-context" / "meta.json").write_text('{"title": "Big", "started_at": 1}')
+    for name in ("bugs", "parity_1", "parity_3"):
+        (run / "reviews" / f"{name}.txt").write_text("[]")
+    (run / "validated.json").write_text("[]")
+
+    reviewers = "bugs parity_1 parity_2 parity_3"
+    assert fr.main(["--run-dir", str(run), "--reviewers", reviewers]) == 0
+
+    out = capsys.readouterr().out
+    assert "2 reviewers" in out
+    assert "produced no output: parity_2" in out
+
+
 def test_malformed_or_differently_cased_confidence_does_not_crash() -> None:
     findings = [
         finding(title="List", confidence=["high"]),

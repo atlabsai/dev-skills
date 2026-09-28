@@ -2,10 +2,11 @@
 
 Multi-agent pull request review for Claude Code, run locally with `/pr-review:review` or on every PR through a reusable GitHub Actions workflow.
 
-Most AI reviewers read the lines that changed. This pipeline does two more things:
+Most AI reviewers read the lines that changed. This pipeline does three more things:
 
 1. **It checks its own findings.** A validator re-reads the code behind every finding before anything reaches you. It throws out false positives, fixes line numbers, lowers severities it can't justify, merges duplicates, checks that the suggested fix is actually correct, and states how confident it is and why.
 2. **It maps what the change can break.** An impact analyst traces the callers of everything the diff touches and names the existing user flows at risk: the *integration contours*. From those it builds a manual test checklist, with the flows most likely to regress listed first.
+3. **It compares the old code with the new.** For code that existed before the PR, the behavior-parity reviewer reads the old version and the new version side by side. It includes new code that *replaces* old code, even when the old code is left untouched. It reports concrete inputs that now behave differently, and whether the PR said so. On a large PR it runs as several parallel shards, one per area.
 
 ```
                  ┌─ reviewer-bugs ─────┐
@@ -13,6 +14,7 @@ Most AI reviewers read the lines that changed. This pipeline does two more thing
 PR diff ──────▶  ├─ reviewer-quality ──┼──▶ validator ──┐
                  ├─ reviewer-simplify ─┤   (re-reads    │
                  ├─ reviewer-prod ─────┤    the code)   ├──▶ formatter ──▶ one PR comment
+                 ├─ reviewer-parity ───┤                │
                  ├─ your own reviewers ┘                │   (a Python
                  └─ impact-analyst ─────────────────────┘    script)
                     all in parallel
@@ -22,7 +24,7 @@ PR diff ──────▶  ├─ reviewer-quality ──┼──▶ valida
 
 ````markdown
 🤖 PR Review — PR #412: Move session locks to per-request keys
-5 reviewers · validated · 3 contours · 4 findings
+6 reviewers · validated · 3 contours · 4 findings
 
 Moves the submit lock from a per-attempt key to a per-request key. 1 critical issue flagged.
 
@@ -80,13 +82,13 @@ Inputs to the reusable workflow:
 
 | Input | Default | |
 |---|---|---|
-| `models` | `{}` (every stage on `sonnet`) | Per-stage override, e.g. `{"impact":"opus","validator":"opus"}`. Invalid values are ignored with a warning; they never block a review. |
-| `reviewers` | `bugs arch quality simplify prod` | Which built-in reviewers to run. |
+| `models` | `{}` (`bugs` and `parity` on `opus`, every other stage on `sonnet`) | Per-stage override, e.g. `{"impact":"opus","validator":"opus"}`. Invalid values are ignored with a warning; they never block a review. |
+| `reviewers` | `bugs arch quality simplify prod parity` | Which built-in reviewers to run. |
 | `extra_reviewers` | none | Paths in your repo to your own reviewer specs (see below). |
 | `trigger_phrase` | `/pr-review` | Comment that re-runs a review. Honoured only from owners, members and collaborators. |
 | `runs_on` | `"ubuntu-latest"` | Runner labels as JSON. |
 | `claude_cli_version` | pinned | The Claude Code CLI version. Pinned so a CLI release never silently changes review behaviour. |
-| `tooling_ref` | `v1` | Keep equal to the ref in your `uses:` line. |
+| `tooling_ref` | `v1.1` | Keep equal to the ref in your `uses:` line. |
 
 **Project conventions.** The architecture and quality reviewers read your `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/architecture/` if they exist, and judge the diff against your rules rather than generic taste. The better those files are, the better the review.
 
@@ -115,6 +117,13 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 
 "Addressed" means a later commit fixed the flagged issue. That doesn't prove the review caused the fix.
 
+**Behavior parity, and why two stages default to Opus (v1.1).** A large migration PR in the same repo passed over a thousand tests and this review, then shipped about 25 unintended behavior changes that hurt users. None were bugs in the new code taken alone; each was a difference from the old code. We rebuilt the behavior-parity reviewer against that PR, blind (it never saw the list of known regressions), and measured it:
+
+- **One session on the whole 24k-line diff found 0 of the ~25.** It stopped after ~20 tool calls. Splitting the diff into per-area shards is now built in.
+- **Sharded, on Sonnet: about 1 of 9 high-severity regressions.** Its findings were real but low-value.
+- **Sharded, on Opus: 6.5 of 9 high-severity and 9 of 15 medium.** That was only after one more change. The first version treated new code with no `-` lines as "additive" and skipped it, but a new class that replaced an untouched legacy one held most of the regressions. The reviewer now pairs every replacement with its predecessor.
+- **The bugs reviewer:** on three merged PRs with 12 known bugs, Sonnet found 0 and Opus about 6, plus 2 the audit had missed. The validator stayed on Sonnet; Opus was better calibrated there, but the gap was smaller.
+
 **Infrastructure lessons, which cost us real time:**
 
 1. **Don't let a model orchestrate other models in CI.** A one-shot `claude -p` session that spawned reviewers kept saying it would "continue once they finish" and then ended its turn. Nothing posted and nothing failed. Now bash waits on real process IDs, and every model call is one session that never orchestrates.
@@ -125,7 +134,7 @@ We ran this pipeline on every PR in a production monorepo (Django, React, Celery
 
 ## Cost and security
 
-- **Cost:** a review is seven model sessions (five reviewers, the impact analyst and the validator). With every stage on Sonnet, a ~400-line diff took about 7 minutes and $3 locally; in CI the reviewers run concurrently and a review typically takes 8–10 minutes end to end. Use `models` to move stages to a cheaper model, or `reviewers` to run fewer.
+- **Cost:** a review is eight model sessions (six reviewers, the impact analyst and the validator), two of them on Opus by default. On a PR over ~2,000 changed non-test lines, the parity reviewer runs as up to 8 Opus sessions instead of one. Measured in v1.0 with every stage on Sonnet: a ~400-line diff took about 7 minutes and $3 locally; in CI the reviewers run concurrently and a review typically takes 8–10 minutes end to end. The two Opus stages cost more; use `models` to move them back to `sonnet`, or `reviewers` to run fewer.
 - **Agent permissions:** agents get `Read`, `Grep`, `Glob` and `Write` only. They have no shell and no network, and the checkout does not persist git credentials.
 - **Untrusted PR content:** the model reads the PR's code and description. A malicious PR could try to steer what the review says, but not what the job can do.
 - **Who can trigger a review:** comment triggers are accepted only from owners, members and collaborators. Pull requests from forks don't receive your secrets, so they aren't reviewed automatically.

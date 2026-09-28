@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from typing import Any
@@ -433,7 +434,8 @@ def main(argv: list[str] | None = None) -> int:
         "PR": args.pr,
         "PR_TITLE": str(meta.get("title") or ""),
         "FAILED_REVIEWERS": ",".join(failed),
-        "REVIEWER_COUNT": str(len(reviewers)),
+        # A sharded reviewer (parity_1, parity_2, ...) counts once.
+        "REVIEWER_COUNT": str(len({re.sub(r"_\d+$", "", r) for r in reviewers})),
         "RUNTIME": str(int(time.time()) - int(started_at))
         if isinstance(started_at, int)
         else "",

@@ -35,7 +35,7 @@ jobs:
   review:
     # Skip the run entirely for comments that aren't a review request.
     if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '/pr-review')
-    uses: atlabsai/dev-skills/.github/workflows/pr-review.yml@v1
+    uses: atlabsai/dev-skills/.github/workflows/pr-review.yml@v1.1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       # Optional:
