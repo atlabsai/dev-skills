@@ -43,19 +43,23 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def changed_sizes(base: str, head: str) -> dict[str, int]:
-    """Non-test changed file -> added + removed lines (binary files count 1)."""
+def changed_sizes(base: str, head: str) -> tuple[dict[str, int], dict[str, str]]:
+    """Non-test changed file -> added + removed lines (binary = 1), and renames new -> old.
+    `--numstat -z` gives a rename as an empty path field followed by the old and new paths."""
     sizes: dict[str, int] = {}
-    for line in _git("diff", "--numstat", "-M", base, head).splitlines():
-        added, removed, path = line.split("\t", 2)
-        if " => " in path:  # rename: numstat prints "old => new"
-            path = re.sub(r"\{[^}]* => ([^}]*)\}", r"\1", path).split(" => ")[-1]
-        if TEST_PATH.search(path):
-            continue
-        sizes[path] = (int(added) if added != "-" else 1) + (
-            int(removed) if removed != "-" else 0
-        )
-    return sizes
+    renames: dict[str, str] = {}
+    fields = _git("diff", "--numstat", "-z", "-M", base, head).split("\0")
+    i = 0
+    while i < len(fields) and fields[i]:
+        added, removed, path = fields[i].split("\t", 2)
+        i += 1
+        if not path:
+            old, path = fields[i], fields[i + 1]
+            renames[path] = old
+            i += 2
+        if not TEST_PATH.search(path):
+            sizes[path] = 1 if added == "-" else int(added) + int(removed)
+    return sizes, renames
 
 
 def plan(sizes: dict[str, int]) -> list[list[str]]:
@@ -84,7 +88,7 @@ def main() -> int:
     # Diff against the merge base, like `git diff BASE...HEAD` and snapshot_base.py,
     # so a base branch that moved on doesn't leak its own changes into the shards.
     base = _git("merge-base", args.base, args.head).strip()
-    sizes = changed_sizes(base, args.head)
+    sizes, renames = changed_sizes(base, args.head)
     if sum(sizes.values()) <= THRESHOLD:
         print(0)
         return 0
@@ -92,7 +96,10 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     listing = []
     for k, files in enumerate(shards, start=1):
-        diff = _git("diff", "-M", base, args.head, "--", *files)
+        # Include each renamed file's old path: git filters paths before rename
+        # detection, so without it a moved file shows up as brand new.
+        pathspec = files + [renames[f] for f in files if f in renames]
+        diff = _git("diff", "-M", base, args.head, "--", *pathspec)
         (args.out / f"{k}.diff").write_text(diff)
         lines = sum(sizes[f] for f in files)
         listing.append(f"# shard {k}: {len(files)} files, {lines} lines")

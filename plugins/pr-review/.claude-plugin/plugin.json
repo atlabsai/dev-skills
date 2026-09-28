@@ -1,6 +1,6 @@
 {
   "name": "pr-review",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Multi-agent PR review with per-finding validation and integration-impact analysis. Runs locally via /pr-review or in CI via the reusable GitHub Actions workflow.",
   "author": {
     "name": "Atlabs"

@@ -37,8 +37,9 @@ def test_shards_diff_against_the_merge_base_and_skip_tests(
 
     monkeypatch.chdir(tmp_path)
     git("init", "-qb", "main")
-    commit({"README.md": 1})
+    commit({"README.md": 1, "lib/old_name.py": 300})
     git("switch", "-qc", "feature")
+    git("mv", "lib/old_name.py", "lib/new_name.py")
     commit({"app/views.py": 1200, "web/page.tsx": 1200, "app/tests/test_v.py": 3000})
     git("switch", "-q", "main")
     commit({"other/on_main.py": 5000})  # main moves on after the branch point
@@ -50,3 +51,5 @@ def test_shards_diff_against_the_merge_base_and_skip_tests(
     listing = Path("shards/SHARDS.txt").read_text()
     assert "on_main" not in listing and "test_v" not in listing
     assert "app/views.py" in Path("shards/1.diff").read_text()
+    diffs = "".join(Path(f"shards/{k}.diff").read_text() for k in (1, 2))
+    assert "rename from lib/old_name.py" in diffs  # old side kept for moved files

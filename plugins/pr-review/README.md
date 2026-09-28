@@ -90,7 +90,7 @@ Inputs to the reusable workflow:
 | `trigger_phrase` | `/pr-review` | Comment that re-runs a review. Honoured only from owners, members and collaborators. |
 | `runs_on` | `"ubuntu-latest"` | Runner labels as JSON. |
 | `claude_cli_version` | pinned | The Claude Code CLI version. Pinned so a CLI release never silently changes review behaviour. |
-| `tooling_ref` | `v1.1` | Keep equal to the ref in your `uses:` line. |
+| `tooling_ref` | `v1.1.1` | Keep equal to the ref in your `uses:` line. |
 
 **Project conventions.** The architecture and quality reviewers read your `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/architecture/` if they exist, and judge the diff against your rules rather than generic taste. The better those files are, the better the review.
 
