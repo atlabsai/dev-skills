@@ -70,6 +70,8 @@ Then:
 
 The same pipeline (same reviewers, validator, impact analyst and formatter) also runs on OpenAI Codex. `/pr-review:setup-gh-action` offers Claude, Codex or both; by hand, copy [`templates/pr-review-codex.yml`](templates/pr-review-codex.yml) and add an `OPENAI_API_KEY` repo secret.
 
+The behavior-parity reviewer is Claude-only for now: it hasn't been evaluated on Codex models, so the Codex engine doesn't run it.
+
 - It posts as **PR Review (Codex)** and re-runs on a `/codex-review` comment, so it can run alongside the Claude version without the two triggering each other. In our experience the two catch different things, so running both is reasonable.
 - It needs an OpenAI API key. Codex's ChatGPT sign-in isn't supported in CI.
 - The model runs in Codex's read-only sandbox, and a permission profile makes Codex's own credentials file unreadable to it. A PR could try to talk the model into printing secrets into the posted review; this makes that impossible. Only the login step ever sees the API key.

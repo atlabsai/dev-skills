@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Split a large PR diff into area shards for the behavior-parity reviewer.
+"""Split a large PR diff into shards for the behavior-parity reviewer.
 
 One parity session cannot cover a large PR: on a 24k-line migration PR a single
 session stopped after ~20 tool calls and found none of ~25 known behavior
-regressions, while one session per area found most of them. This groups the changed
-files by area (their leading path segments), keeps each area whole where it
-can, and packs consecutive areas into shards of roughly `--target` diff lines.
+regressions, while one session per area found most of them. This sorts the
+changed files by path (so a directory's files stay next to each other) and cuts
+the list into chunks of about TARGET changed lines, at most MAX_SHARDS of them.
 
 Test files are left out of the shards: parity is about product behavior, and
 a large test diff would crowd out the code it tests.
 
 Usage:
   plan_parity_shards.py --base REF --out DIR [--head HEAD]
-                        [--threshold 2000] [--target 1500] [--max-shards 8]
 
-Prints the shard count to stdout. 0 means "don't shard" (the non-test diff is at or
-below --threshold); nothing is written then. Otherwise writes DIR/<k>.diff
+Prints the shard count to stdout. 0 means "don't shard" (the non-test diff is at
+or below THRESHOLD); nothing is written then. Otherwise writes DIR/<k>.diff
 (k = 1..N) and DIR/SHARDS.txt (the files in each shard). Run from the
 repository root.
 """
@@ -29,11 +28,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+THRESHOLD = 2000  # changed non-test lines; at or below this, one parity session
+TARGET = 1500  # changed lines per shard
+MAX_SHARDS = 8
 TEST_PATH = re.compile(
     r"(^|/)(tests?|__tests__|__snapshots__)/|(^|/)test_[^/]*$|_test\.py$"
     r"|\.(test|spec|stories)\.[jt]sx?$"
 )
-AREA_DEPTH = 3
 
 
 def _git(*args: str) -> str:
@@ -57,33 +58,18 @@ def changed_sizes(base: str, head: str) -> dict[str, int]:
     return sizes
 
 
-def area_of(path: str) -> str:
-    """The file's leading directories (not the file name); top-level files are their own area."""
-    return "/".join(path.split("/")[:-1][:AREA_DEPTH]) or path
-
-
-def plan(sizes: dict[str, int], target: int, max_shards: int) -> list[list[str]]:
-    """Pack areas (sorted, so neighbours stay together) into shards."""
-    total = sum(sizes.values())
-    target = max(target, math.ceil(total / max_shards))
-    areas: dict[str, list[str]] = {}
-    for path in sorted(sizes):
-        areas.setdefault(area_of(path), []).append(path)
+def plan(sizes: dict[str, int]) -> list[list[str]]:
+    """Cut the path-sorted files into chunks; past MAX_SHARDS, chunks grow instead."""
+    target = max(TARGET, math.ceil(sum(sizes.values()) / MAX_SHARDS))
     shards: list[list[str]] = [[]]
     load = 0
-    for files in areas.values():
-        size = sum(sizes[f] for f in files)
-        if shards[-1] and load + size > target and len(shards) < max_shards:
+    for path in sorted(sizes):
+        if shards[-1] and load + sizes[path] > target and len(shards) < MAX_SHARDS:
             shards.append([])
             load = 0
-        # An area bigger than the target is split file by file.
-        for f in files:
-            if shards[-1] and load + sizes[f] > target and len(shards) < max_shards:
-                shards.append([])
-                load = 0
-            shards[-1].append(f)
-            load += sizes[f]
-    return [s for s in shards if s]
+        shards[-1].append(path)
+        load += sizes[path]
+    return shards
 
 
 def main() -> int:
@@ -93,19 +79,16 @@ def main() -> int:
     )
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--threshold", type=int, default=2000)
-    parser.add_argument("--target", type=int, default=1500)
-    parser.add_argument("--max-shards", type=int, default=8)
     args = parser.parse_args()
 
     # Diff against the merge base, like `git diff BASE...HEAD` and snapshot_base.py,
     # so a base branch that moved on doesn't leak its own changes into the shards.
     base = _git("merge-base", args.base, args.head).strip()
     sizes = changed_sizes(base, args.head)
-    if sum(sizes.values()) <= args.threshold:
+    if sum(sizes.values()) <= THRESHOLD:
         print(0)
         return 0
-    shards = plan(sizes, args.target, args.max_shards)
+    shards = plan(sizes)
     args.out.mkdir(parents=True, exist_ok=True)
     listing = []
     for k, files in enumerate(shards, start=1):
