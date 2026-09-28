@@ -64,7 +64,7 @@ on:
       tooling_ref:
         description: "Ref of atlabsai/dev-skills to load agents, prompts and the formatter from. Keep it equal to the ref in your `uses:` line."
         type: string
-        default: "v1.1"
+        default: "v1.1.1"
     secrets:
       claude_code_oauth_token:
         description: "Claude Code OAuth token (from `claude setup-token`). Provide this OR anthropic_api_key."
