@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
       - name: Lint Python
         run: |
@@ -27,3 +29,26 @@ jobs:
           for f in .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json; do
             jq -e . "$f" > /dev/null || { echo "::error::invalid JSON: $f"; exit 1; }
           done
+      # This repo is public: block PRs that would publish private details. Generic
+      # patterns live here; org-specific terms live in the LEAK_DENYLIST secret (an
+      # extended regex), so the list itself is never published. A hit prints only
+      # the file and line, never the text, since CI logs are public too.
+      - name: Leak check
+        if: github.event_name == 'pull_request'
+        env:
+          DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          PR_TEXT: ${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}
+        run: |
+          PAT='/Users/[A-Za-z]|/home/[a-z]+/|/private/tmp/|claude\.ai/(artifact|code)/|BEGIN [A-Z ]*PRIVATE KEY'
+          [ -z "$DENYLIST" ] || PAT="$PAT|$DENYLIST"
+          HITS=$(git diff -U0 "$BASE"...HEAD -- . ':!.github/workflows/ci.yml' \
+            | awk '/^\+\+\+ b\//{f=substr($0,7); next} /^@@/{split($3,a,/[,+]/); n=a[2]; next}
+                   /^\+/{print f ":" n "\t" substr($0,2); n++}' | grep -iE "$PAT" | cut -f1)
+          grep -qiE "$PAT" <<< "$PR_TEXT" && HITS+=$'\nPR title/body'
+          git log --format=%B "$BASE"..HEAD | grep -qiE "$PAT" && HITS+=$'\na commit message'
+          if [ -n "$(tr -d '[:space:]' <<< "$HITS")" ]; then
+            echo "::error::Possible private detail (text not shown; this log is public):"
+            echo "$HITS"; exit 1
+          fi
+
