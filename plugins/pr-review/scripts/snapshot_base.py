@@ -67,7 +67,7 @@ def snapshot(base: str, out: Path, head: str = "HEAD") -> int:
             captured += 1
         except subprocess.CalledProcessError:
             # e.g. a submodule entry; the INDEX line still records the change.
-            continue
+            print(f"no base copy of {path}", file=sys.stderr)
     (out / "INDEX.txt").write_text("".join(f"{line}\n" for line in index_lines))
     return captured
 
