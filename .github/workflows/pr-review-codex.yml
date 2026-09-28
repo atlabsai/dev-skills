@@ -1,25 +1,18 @@
-name: pr-review
+name: pr-review (Codex)
 
-# Reusable workflow: multi-agent PR review with Claude Code.
-# Call it from your repo — see plugins/pr-review/templates/pr-review.yml, or run
-# /pr-review:setup-gh-action from the pr-review plugin to add it for you.
+# Reusable workflow: the pr-review pipeline, run on OpenAI Codex instead of
+# Claude. Same agents, prompts and formatter as pr-review.yml; see
+# plugins/pr-review/templates/pr-review-codex.yml, or run
+# /pr-review:setup-gh-action and choose Codex.
 #
-# Pipeline, all in ONE job:
-#   resolve PR → checkout → capture diff
-#   → 5 reviewers + impact analyst, concurrently (6 background `claude -p` processes)
-#   → validator (re-reads the code behind every finding)
-#   → deterministic formatter (a Python script, no model) → post one comment
-#
-# Why one job: GitHub bills each job's wall-clock rounded UP to the minute, plus
-# a runner cold start each. Six ~4-minute reviewers as six jobs bill ~24 minutes
-# for ~4 minutes of work; in one job they bill the max, not the sum.
-#
-# Why bash `wait` and not an orchestrating agent: an earlier design had one
-# Claude session spawn the reviewers and wait for them. It repeatedly announced
-# it would "continue once the reviewers finish" and ended its turn — a one-shot
-# `claude -p` has nothing to resume it, so no review was posted and nothing
-# failed. Waiting is done by bash on real PIDs; every model call is a single
-# session that never orchestrates.
+# Differences from the Claude engine:
+# - Each stage's output is its final message (`codex exec -o`), not a file
+#   the model writes, so a stage can't "forget" to save its result. JSON
+#   stages are cut out of the message by scripts/extract_json.py.
+# - The model runs in Codex's read-only sandbox, and a permission profile
+#   denies it the credentials file: a PR can try to talk the model into
+#   printing secrets into the posted review, and this makes that impossible.
+# - Only the login step ever sees the API key.
 
 on:
   workflow_call:
@@ -37,38 +30,35 @@ on:
         type: string
         default: "bugs arch quality simplify prod"
       extra_reviewers:
-        description: >-
-          Your own reviewer specs, as paths in YOUR repo, space-separated
-          (e.g. ".github/pr-review/reviewer-analytics.md"). Each runs in
-          parallel with the built-ins; its file name (minus .md) is its name.
+        description: "Your own reviewer specs, as paths in YOUR repo, space-separated."
+        type: string
+        default: ""
+      model:
+        description: "Codex model for every stage. Empty uses the Codex CLI's default."
         type: string
         default: ""
       models:
         description: >-
-          JSON object overriding the model per stage, e.g.
-          '{"impact":"opus","validator":"opus"}'. Keys: reviewer names,
-          "impact", "validator". Default for every stage: sonnet.
+          JSON object overriding the model per stage, e.g. '{"validator":"<model>"}'.
+          Keys: reviewer names, "impact", "validator".
         type: string
         default: "{}"
       runs_on:
-        description: "Runner label(s) as JSON, e.g. '\"ubuntu-latest\"' or '[\"self-hosted\",\"linux\"]'."
+        description: "Runner label(s) as JSON. The Codex sandbox needs a Linux runner with sudo for setup."
         type: string
         default: '"ubuntu-latest"'
-      claude_cli_version:
-        description: "Pinned Claude Code CLI version, so a CLI release never silently changes review behaviour."
+      codex_cli_version:
+        description: "Pinned Codex CLI version, so a CLI release never silently changes review behaviour."
         type: string
-        default: "2.1.214"
+        default: "0.145.0"
       tooling_ref:
-        description: "Ref of atlabsai/dev-skills to load agents, prompts and the formatter from. Keep it equal to the ref in your `uses:` line."
+        description: "Ref of atlabsai/dev-skills to load agents, prompts and scripts from. Keep it equal to the ref in your `uses:` line."
         type: string
         default: "v1"
     secrets:
-      claude_code_oauth_token:
-        description: "Claude Code OAuth token (from `claude setup-token`). Provide this OR anthropic_api_key."
-        required: false
-      anthropic_api_key:
-        description: "Anthropic API key. Provide this OR claude_code_oauth_token."
-        required: false
+      openai_api_key:
+        description: "OpenAI API key used by the Codex CLI."
+        required: true
 
 env:
   REVIEWER_CALL_TIMEOUT: "720"
@@ -79,8 +69,6 @@ env:
 
 jobs:
   review:
-    # Open PRs only; comment triggers only from people with write access, so a
-    # drive-by commenter can't spend your tokens.
     if: >-
       inputs.pr_number != '' ||
       (github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft) ||
@@ -89,10 +77,9 @@ jobs:
        contains(github.event.comment.body, inputs.trigger_phrase) &&
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # Per-call ceilings fire first (fan-out 12 min + one retry of stages that
-    # wrote nothing 8 min + validate 10 min + ~3 min setup/post), so a slow
-    # stage degrades the review instead of the job being hard-cancelled with
-    # no comment and no debug artifact.
+    # Per-call ceilings fire first (fan-out 12 + one retry 8 + validate 10 +
+    # ~3 setup/post), so a slow stage degrades the review instead of the job
+    # being hard-cancelled with no comment and no debug artifact.
     timeout-minutes: 40
     steps:
       - name: Resolve PR
@@ -115,7 +102,6 @@ jobs:
             echo "branch=$(jq -r .headRefName <<< "$PR_JSON")"
             echo "base=$(jq -r .baseRefName <<< "$PR_JSON")"
           } >> "$GITHUB_OUTPUT"
-          # Titles can contain anything; pass through a file, not an output.
           mkdir -p "$SCRATCH/pr-context" "$SCRATCH/reviews" "$SCRATCH/logs"
           jq --argjson t "$(date +%s)" '{title, body, started_at: $t}' <<< "$PR_JSON" > "$SCRATCH/pr-context/meta.json"
 
@@ -160,35 +146,69 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install Claude Code CLI
+      - name: Install Codex CLI
         env:
-          VERSION: ${{ inputs.claude_cli_version }}
-        run: npm install -g "@anthropic-ai/claude-code@$VERSION"
+          VERSION: ${{ inputs.codex_cli_version }}
+        run: npm install -g "@openai/codex@$VERSION"
 
-      - name: Check Claude auth
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
-          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+      - name: Enable the Codex sandbox
         run: |
-          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::error::Pass claude_code_oauth_token or anthropic_api_key to this workflow."
+          set -euo pipefail
+          # Codex's Linux sandbox needs unprivileged user namespaces, which
+          # Ubuntu runners restrict by default.
+          if [ "$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 1)" != 1 ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != 0 ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # Fail before spending any model quota if the sandbox can't start.
+          codex sandbox /bin/true
+
+      # All setup that needs sudo is done; revoke it before credentials exist,
+      # as the official Codex action does.
+      - name: Drop sudo
+        run: |
+          sudo -n sh -c "deluser '$USER' sudo >/dev/null 2>&1 || true; rm -f '/etc/sudoers.d/$USER'"
+          if sudo -n true 2>/dev/null; then
+            echo "::error::could not revoke passwordless sudo"
             exit 1
           fi
-          timeout 120 claude -p 'Reply with exactly: OK' --model haiku || {
-            echo "::error::Claude CLI auth check failed. Check the secret you passed."
+
+      - name: Log in to Codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::Pass openai_api_key to this workflow."
             exit 1
-          }
+          fi
+          CODEX_HOME="$HOME/.codex-review"
+          mkdir -p "$CODEX_HOME" && chmod 700 "$CODEX_HOME"
+          echo "CODEX_HOME=$CODEX_HOME" >> "$GITHUB_ENV"
+          # Read-only everywhere, and the credentials file unreadable by the
+          # model: reviews read untrusted PR content and are posted publicly.
+          {
+            printf 'cli_auth_credentials_store = "file"\n'
+            printf 'default_permissions = "review"\n\n'
+            printf '[permissions.review]\n'
+            printf 'extends = ":read-only"\n\n'
+            printf '[permissions.review.filesystem]\n'
+            printf '"%s" = "deny"\n' "$CODEX_HOME/auth.json"
+          } > "$CODEX_HOME/config.toml"
+          export CODEX_HOME
+          printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null
 
       - name: Resolve stages and models
         env:
           REVIEWERS: ${{ inputs.reviewers }}
           EXTRA_REVIEWERS: ${{ inputs.extra_reviewers }}
+          MODEL: ${{ inputs.model }}
           MODELS: ${{ inputs.models }}
         run: |
-          # A malformed `models` input degrades to defaults with a warning; it
-          # must never stop reviews from being posted.
           if ! OVERRIDES=$(jq -ce 'if type == "object" then . else error("not an object") end' <<< "$MODELS" 2>/dev/null); then
-            echo "::warning::models input is not a JSON object; using sonnet for every stage"
+            echo "::warning::models input is not a JSON object; ignoring it"
             OVERRIDES='{}'
           fi
           STAGES=""
@@ -207,32 +227,35 @@ jobs:
           UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES impact validator" \
             '($o | keys) - ($n | split(" ")) | join(", ")')
           [ -z "$UNKNOWN" ] || echo "::warning::models has unknown stage(s), ignored: $UNKNOWN"
-          # Only plausible model names (letters, digits, ._:-[]) are accepted: a
-          # value containing a newline would otherwise inject lines into $GITHUB_ENV.
-          VALID=$(jq -c 'with_entries(select(.value | type == "string" and test("^[A-Za-z0-9._:\\[\\]-]+$")))' <<< "$OVERRIDES")
-          INVALID=$(jq -rn --argjson o "$OVERRIDES" --argjson v "$VALID" '($o | keys) - ($v | keys) | join(", ")')
-          [ -z "$INVALID" ] || echo "::warning::models has invalid model names for: $INVALID; using sonnet"
-
+          # Only plausible model names are accepted: a value with a newline
+          # would otherwise inject lines into $GITHUB_ENV.
+          NAME_RE='^[A-Za-z0-9._:\[\]-]+$'
+          if [ -n "$MODEL" ] && ! [[ "$MODEL" =~ $NAME_RE ]]; then
+            echo "::warning::model input is not a valid model name; using the Codex default"
+            MODEL=""
+          fi
           for s in $NAMES impact validator; do
-            m=$(jq -r --arg s "$s" '.[$s] // "sonnet"' <<< "$VALID")
-            echo "MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$s")=$m"
+            m=$(jq -r --arg s "$s" '.[$s] | select(type == "string")' <<< "$OVERRIDES")
+            if [ -n "$m" ] && ! [[ "$m" =~ $NAME_RE ]]; then
+              echo "::warning::models.$s is not a valid model name; ignoring it" >&2
+              m=""
+            fi
+            echo "MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$s")=${m:-$MODEL}"
           done | tee -a "$GITHUB_ENV"
 
       - name: Run reviewers + impact analyst in parallel
         working-directory: repo
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
-          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
         run: |
           set +e
-          prompt() {  # spec, out, extra
-            sed -e "s|__SPEC__|$1|" -e "s|__OUT__|$2|" -e "s|__SCRATCH__|$SCRATCH|g" \
-                -e "s|__EXTRA__|$3|" "$TOOLING/prompts/stage.md"
+          prompt() {  # spec, extra
+            sed -e "s|__SPEC__|$1|" -e "s|__SCRATCH__|$SCRATCH|g" -e "s|__EXTRA__|$2|" \
+              "$TOOLING/prompts/stage-codex.md"
           }
-          model_for() { local v; v="MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$1")"; echo "${!v:-sonnet}"; }
+          model_args() {  # stage -> "--model X", or nothing for the CLI default
+            local v; v="MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$1")"
+            [ -z "${!v}" ] || printf -- '--model\n%s\n' "${!v}"
+          }
 
-          # Every stage as name=spec=output, so the launch and the retry below
-          # treat reviewers and the impact analyst alike.
           { sed 's|$|=reviews|' "$SCRATCH/stages.txt"; echo "impact=$TOOLING/agents/impact-analyst.md=impact"; } \
             | while IFS='=' read -r name spec kind; do
                 if [ "$kind" = impact ]; then out="$SCRATCH/impact.json"; else out="$SCRATCH/reviews/$name.txt"; fi
@@ -241,8 +264,8 @@ jobs:
 
           declare -A PIDS RC
           launch() {  # name, spec, output, per-call timeout, log name
-            timeout "$4" claude -p "$(prompt "$2" "$3" "")" \
-              --model "$(model_for "$1")" --allowed-tools "Read,Grep,Glob,Write" \
+            local args; mapfile -t args < <(model_args "$1")
+            timeout "$4" codex exec "${args[@]}" --ephemeral -o "$3" "$(prompt "$2" "")" \
               > "$SCRATCH/logs/$5.log" 2>&1 &
             PIDS[$1]=$!
           }
@@ -250,49 +273,56 @@ jobs:
             for t in "${!PIDS[@]}"; do wait "${PIDS[$t]}"; RC[$t]=$?; echo "$t exited rc=${RC[$t]}"; done
             PIDS=()
           }
+          # The impact analysis must be a JSON object; anything else counts
+          # as no output, so it is retried like a stage that wrote nothing.
+          impact_usable() {
+            if [ -s "$SCRATCH/impact.json" ] && python3 "$TOOLING/scripts/extract_json.py" "$SCRATCH/impact.json" object; then
+              return 0
+            fi
+            rm -f "$SCRATCH/impact.json"
+            return 1
+          }
 
           while IFS='=' read -r name spec out; do
             launch "$name" "$spec" "$out" "$REVIEWER_CALL_TIMEOUT" "$name"
           done < "$SCRATCH/all-stages.txt"
           wait_all
+          impact_usable
 
-          # The output file, not the exit code, is the contract: a session can
-          # exit 0 having skipped its final Write, and sometimes does. Retry
-          # those once, concurrently, under a shorter ceiling. A stage killed
-          # by the timeout (124) already used its whole budget; a shorter
-          # second attempt won't finish either, so it isn't retried.
+          # A stage killed by the timeout (124) already used its whole budget,
+          # so it isn't retried; any other stage without output is, once.
           while IFS='=' read -r name spec out; do
             if [ ! -s "$out" ] && [ "${RC[$name]}" != 124 ]; then
-              echo "::notice::retrying $name, which wrote no output"
+              echo "::notice::retrying $name, which produced no usable output"
               launch "$name" "$spec" "$out" "$RETRY_CALL_TIMEOUT" "$name.retry"
             fi
           done < "$SCRATCH/all-stages.txt"
           wait_all
+          impact_usable  # re-check: a retried impact analysis can come back as prose again
 
-          # Still missing: a reviewer is listed as failed in the comment; a
-          # missing impact analysis posts the review without contours.
           while IFS='=' read -r name _ out; do
             [ -s "$out" ] || echo "::warning::$name produced no output"
           done < "$SCRATCH/all-stages.txt"
 
       - name: Validate findings
         working-directory: repo
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
-          ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
         run: |
           EXTRA="Reviewer outputs to validate are the files in $SCRATCH/reviews/, one per reviewer, named after it. A reviewer with no file failed; skip it."
-          PROMPT=$(sed -e "s|__SPEC__|$TOOLING/agents/validator.md|" -e "s|__OUT__|$SCRATCH/validated.json|" \
-            -e "s|__SCRATCH__|$SCRATCH|g" -e "s|__EXTRA__|$EXTRA|" "$TOOLING/prompts/stage.md")
-          timeout "$VALIDATOR_CALL_TIMEOUT" claude -p "$PROMPT" \
-            --model "$MODEL_VALIDATOR" --allowed-tools "Read,Grep,Glob,Write" \
+          PROMPT=$(sed -e "s|__SPEC__|$TOOLING/agents/validator.md|" -e "s|__SCRATCH__|$SCRATCH|g" \
+            -e "s|__EXTRA__|$EXTRA|" "$TOOLING/prompts/stage-codex.md")
+          ARGS=(); [ -z "$MODEL_VALIDATOR" ] || ARGS=(--model "$MODEL_VALIDATOR")
+          timeout "$VALIDATOR_CALL_TIMEOUT" codex exec "${ARGS[@]}" --ephemeral -o "$SCRATCH/validated.json" "$PROMPT" \
             > "$SCRATCH/logs/validator.log" 2>&1
           echo "validator exited rc=$?"
-          grep -E '^(DISMISSED|MERGED):' "$SCRATCH/logs/validator.log" || true
-          if [ ! -s "$SCRATCH/validated.json" ]; then
-            echo "::error::validator produced no output; see the pr-review-debug artifact"
+          grep -E '^(DISMISSED|MERGED):' "$SCRATCH/validated.json" 2>/dev/null || true
+          if ! python3 "$TOOLING/scripts/extract_json.py" "$SCRATCH/validated.json" array; then
+            echo "::error::validator produced no JSON findings array; see the pr-review-debug artifact"
             exit 1
           fi
+
+      - name: Remove Codex credentials
+        if: always()
+        run: rm -f -- "${CODEX_HOME:-/nonexistent}/auth.json"
 
       - name: Format review comment
         working-directory: repo
@@ -306,6 +336,7 @@ jobs:
             --reviewers "$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')" \
             --pr "$PR" --repo "$GITHUB_REPOSITORY" --branch "$BRANCH" \
             --rerun-hint "Comment \`$TRIGGER\` to re-run this review." > /dev/null
+          sed -i 's|^🤖 PR Review —|🤖 PR Review (Codex) —|' "$SCRATCH/comment.md"
 
       - name: Post review comment
         env:

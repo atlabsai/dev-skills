@@ -1,6 +1,6 @@
 # pr-review
 
-Multi-agent pull request review for Claude Code, run locally with `/pr-review` or on every PR through a reusable GitHub Actions workflow.
+Multi-agent pull request review for Claude Code, run locally with `/pr-review:review` or on every PR through a reusable GitHub Actions workflow.
 
 Most AI reviewers read the lines that changed. This pipeline does two more things:
 
@@ -57,14 +57,22 @@ The sweeper re-dispatches stuck jobs and relies on the lock to skip live ones...
 Then:
 
 ```
-/pr-review              # review the current branch against the default branch
-/pr-review 412          # review PR #412 (check it out first: gh pr checkout 412)
-/pr-review 412 --post   # ...and post the review as a PR comment
+/pr-review:review              # review the current branch against the default branch
+/pr-review:review 412          # review PR #412 (check it out first: gh pr checkout 412)
+/pr-review:review 412 --post   # ...and post the review as a PR comment
 ```
 
-If your project already has its own `/pr-review` command, the plugin's version is `/pr-review:pr-review`.
+**In CI:** with the plugin installed, run `/pr-review:setup-gh-action` in your repo. It checks the repo can use the workflow, adds `.github/workflows/pr-review.yml`, and tells you how to add the Claude secret if the repo doesn't have one yet. To do it by hand instead, copy [`templates/pr-review.yml`](templates/pr-review.yml) to `.github/workflows/` and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
 
-**In CI:** copy [`examples/pr-review.yml`](../../examples/pr-review.yml) to `.github/workflows/` in your repo and add a `CLAUDE_CODE_OAUTH_TOKEN` secret (from `claude setup-token`) or an `ANTHROPIC_API_KEY` secret. Every PR is then reviewed when it's opened or marked ready, and any member can comment `/pr-review` to run it again.
+## Running it on Codex
+
+The same pipeline (same reviewers, validator, impact analyst and formatter) also runs on OpenAI Codex. `/pr-review:setup-gh-action` offers Claude, Codex or both; by hand, copy [`templates/pr-review-codex.yml`](templates/pr-review-codex.yml) and add an `OPENAI_API_KEY` repo secret.
+
+- It posts as **PR Review (Codex)** and re-runs on a `/codex-review` comment, so it can run alongside the Claude version without the two triggering each other. In our experience the two catch different things, so running both is reasonable.
+- It needs an OpenAI API key. Codex's ChatGPT sign-in isn't supported in CI.
+- The model runs in Codex's read-only sandbox, and a permission profile makes Codex's own credentials file unreadable to it. A PR could try to talk the model into printing secrets into the posted review; this makes that impossible. Only the login step ever sees the API key.
+- Each stage's output is its final message, so a stage can't skip saving its result; JSON is cut out of the message and a stage whose JSON doesn't parse is retried once.
+- The model defaults to the Codex CLI's default; set `model` (or per-stage `models`) to choose.
 
 ## Configuration
 
@@ -86,7 +94,7 @@ Inputs to the reusable workflow:
 
 A reviewer is one markdown file. Put it at `.github/pr-review/reviewer-<name>.md` in your repo:
 
-- `/pr-review` picks it up automatically.
+- `/pr-review:review` picks it up automatically.
 - In CI, list it in `extra_reviewers`.
 
 It runs in parallel with the built-ins, and the validator checks its findings like any other reviewer's. Any output works, either a JSON array in the same shape the built-in reviewers return or plain prose. The validator normalises both. Custom reviewers are where team-specific checks belong, for example "every new button fires an analytics event", "migrations must be backwards-compatible" or "every user flow change has an end-to-end test".
