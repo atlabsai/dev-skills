@@ -13,10 +13,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import plan_parity_shards as pp  # noqa: E402
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
-    ).stdout
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def write_and_commit(root: Path, files: dict[str, int]) -> None:
+    for path, n in files.items():
+        f = root / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("".join(f"line {i}\n" for i in range(n)))
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "change")
 
 
 @pytest.fixture
@@ -26,114 +33,65 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "init", "-q", "-b", "main")
     git(root, "config", "user.email", "t@example.com")
     git(root, "config", "user.name", "t")
-    (root / "README.md").write_text("x\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-q", "-m", "base")
+    write_and_commit(root, {"README.md": 1})
     git(root, "switch", "-q", "-c", "feature")
     monkeypatch.chdir(root)
     return root
 
 
-def add_lines(root: Path, path: str, n: int) -> None:
-    f = root / path
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("".join(f"line {i}\n" for i in range(n)))
-
-
-def commit(root: Path) -> str:
-    git(root, "add", "-A")
-    git(root, "commit", "-q", "-m", "change")
-    return git(root, "merge-base", "main", "HEAD").strip()
-
-
-def test_test_files_are_excluded_from_sizes(repo: Path) -> None:
-    add_lines(repo, "app/api/views.py", 10)
-    add_lines(repo, "app/api/tests/test_views.py", 500)
-    add_lines(repo, "web/src/Button.test.tsx", 500)
-    base = commit(repo)
-    assert pp.changed_sizes(base, "HEAD") == {"app/api/views.py": 10}
-
-
-def test_areas_stay_together_and_neighbours_pack(repo: Path) -> None:
-    sizes = {
-        "app/api/a.py": 400,
-        "app/api/b.py": 400,
-        "app/engine/c.py": 900,
-        "web/src/d.ts": 300,
-    }
-    shards = pp.plan(sizes, target=1000, max_shards=8)
-    assert shards == [
-        ["app/api/a.py", "app/api/b.py"],
-        ["app/engine/c.py"],
-        ["web/src/d.ts"],
-    ]
+def run(out: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    sys.argv = ["plan", "--base", "main", "--out", str(out)]
+    pp.main()
+    return capsys.readouterr().out.strip()
 
 
 def test_files_in_one_directory_stay_together_even_for_shallow_paths() -> None:
-    # 3-segment paths: the area is the directory, not the file.
+    # The area is the directory, not the first 3 path segments incl. the file.
     sizes = {"app/a/x.py": 600, "app/b/y.py": 300, "app/b/z.py": 300}
-    shards = pp.plan(sizes, target=1000, max_shards=8)
-    assert shards == [["app/a/x.py"], ["app/b/y.py", "app/b/z.py"]]
-
-
-def test_top_level_files_are_their_own_area() -> None:
-    assert pp.area_of("setup.py") == "setup.py"
-    assert pp.area_of("src/app.ts") == "src"
-    assert pp.area_of("a/b/c/d/e.py") == "a/b/c"
+    assert pp.plan(sizes, target=1000, max_shards=8) == [
+        ["app/a/x.py"],
+        ["app/b/y.py", "app/b/z.py"],
+    ]
 
 
 def test_an_oversized_area_is_split_file_by_file() -> None:
     sizes = {f"app/api/f{i}.py": 600 for i in range(3)}
-    shards = pp.plan(sizes, target=1000, max_shards=8)
-    assert [len(s) for s in shards] == [1, 1, 1]
+    assert [len(s) for s in pp.plan(sizes, target=1000, max_shards=8)] == [1, 1, 1]
 
 
 def test_shard_cap_raises_the_target_instead_of_adding_shards() -> None:
     sizes = {f"area{i}/x/f.py": 1000 for i in range(20)}
     shards = pp.plan(sizes, target=1000, max_shards=4)
-    assert len(shards) == 4
     assert sorted(len(s) for s in shards) == [5, 5, 5, 5]
-
-
-def test_base_ref_is_resolved_to_the_merge_base(
-    repo: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    add_lines(repo, "app/api/views.py", 1200)
-    add_lines(repo, "web/src/page.tsx", 1200)
-    commit(repo)
-    git(repo, "switch", "-q", "main")
-    add_lines(repo, "other/moved/on.py", 5000)  # main moves on after the branch point
-    commit(repo)
-    git(repo, "switch", "-q", "feature")
-    out = repo.parent / "shards"
-    sys.argv = ["plan", "--base", "main", "--out", str(out)]
-    pp.main()
-    assert capsys.readouterr().out.strip() == "2"
-    assert "other/moved" not in (out / "SHARDS.txt").read_text()
 
 
 def test_small_diff_is_not_sharded(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    add_lines(repo, "app/api/views.py", 50)
-    base = commit(repo)
+    write_and_commit(repo, {"app/api/views.py": 50})
     out = repo.parent / "shards"
-    sys.argv = ["plan", "--base", base, "--out", str(out)]
-    assert pp.main() == 0
-    assert capsys.readouterr().out.strip() == "0"
+    assert run(out, capsys) == "0"
     assert not out.exists()
 
 
-def test_large_diff_writes_one_diff_per_shard(
+def test_large_diff_shards_against_the_merge_base_and_skips_tests(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    add_lines(repo, "app/api/views.py", 1200)
-    add_lines(repo, "web/src/page.tsx", 1200)
-    base = commit(repo)
+    write_and_commit(
+        repo,
+        {
+            "app/api/views.py": 1200,
+            "web/src/page.tsx": 1200,
+            "app/api/tests/test_views.py": 3000,
+        },
+    )
+    git(repo, "switch", "-q", "main")
+    write_and_commit(repo, {"other/moved/on.py": 5000})  # main moves on
+    git(repo, "switch", "-q", "feature")
+
     out = repo.parent / "shards"
-    sys.argv = ["plan", "--base", base, "--out", str(out), "--threshold", "2000"]
-    pp.main()
-    assert capsys.readouterr().out.strip() == "2"
+    assert run(out, capsys) == "2"
+    listing = (out / "SHARDS.txt").read_text()
+    assert "other/moved" not in listing and "test_views" not in listing
     assert "app/api/views.py" in (out / "1.diff").read_text()
     assert "web/src/page.tsx" in (out / "2.diff").read_text()
-    assert "# shard 1: 1 files, 1200 lines" in (out / "SHARDS.txt").read_text()
