@@ -93,7 +93,7 @@ Return ONLY a raw JSON array. No prose before or after it, no markdown fence. If
 Each finding:
 {
 "source": "behavior_parity",
-"title": "WHAT changed, in behavior terms (e.g. 'Voice-only edit now re-renders the portrait')",
+"title": "WHAT changed, in behavior terms (e.g. 'Editing a display name now re-sends the welcome email')",
 "file": "relative/path/to/new/file.py",
 "line_start": 42,
 "line_end": 45,
