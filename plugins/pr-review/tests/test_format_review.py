@@ -151,11 +151,12 @@ def test_parity_shards_count_as_one_reviewer_and_fail_by_name(
         (run / "reviews" / f"{name}.txt").write_text("[]")
     (run / "validated.json").write_text("[]")
 
-    reviewers = "bugs parity_1 parity_2 parity_3"
+    (run / "reviews" / "checks_2.txt").write_text("[]")
+    reviewers = "bugs parity_1 parity_2 parity_3 checks_2"
     assert fr.main(["--run-dir", str(run), "--reviewers", reviewers]) == 0
 
     out = capsys.readouterr().out
-    assert "2 reviewers" in out
+    assert "3 reviewers" in out  # bugs, parity, checks_2 (a custom name is not folded)
     assert "produced no output: parity_2" in out
 
 

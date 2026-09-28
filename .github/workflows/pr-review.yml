@@ -161,8 +161,10 @@ jobs:
           MERGE_BASE=$(git merge-base "origin/$BASE" HEAD)
           # Pre-change copies of modified files (agents have Read, not git), and
           # the parity shard plan: 0 = run parity unsharded.
-          python3 "$TOOLING/scripts/snapshot_base.py" --base "$MERGE_BASE" --out "$SCRATCH/pr-context/base"
-          python3 "$TOOLING/scripts/plan_parity_shards.py" --base "$MERGE_BASE" \
+          # Either failing only degrades parity (no BASE_DIR, or unsharded); never the review.
+          timeout 300 python3 "$TOOLING/scripts/snapshot_base.py" --base "$MERGE_BASE" --out "$SCRATCH/pr-context/base" \
+            || { echo "::warning::snapshot_base failed; continuing without BASE_DIR"; rm -rf "$SCRATCH/pr-context/base"; }
+          timeout 300 python3 "$TOOLING/scripts/plan_parity_shards.py" --base "$MERGE_BASE" \
             --out "$SCRATCH/pr-context/parity-shards" > "$SCRATCH/parity-shards.txt" \
             || echo 0 > "$SCRATCH/parity-shards.txt"
           echo "::notice::parity shards: $(cat "$SCRATCH/parity-shards.txt")"
@@ -220,7 +222,9 @@ jobs:
           done
           printf '%s' "$STAGES" > "$SCRATCH/stages.txt"
           NAMES=$(cut -d= -f1 "$SCRATCH/stages.txt" | tr '\n' ' ')
-          BASES=$(for n in $NAMES; do echo "${n%_[0-9]*}"; done | sort -u | tr '\n' ' ')
+          # Only the parity shards fold back to a base name; a custom reviewer
+          # called e.g. "checks_2" keeps its own name.
+          BASES=$(for n in $NAMES; do [[ "$n" =~ ^parity_[0-9]+$ ]] && echo parity; done | sort -u | tr '\n' ' ')
           UNKNOWN=$(jq -rn --argjson o "$OVERRIDES" --arg n "$NAMES $BASES impact validator" \
             '($o | keys) - ($n | split(" ")) | join(", ")')
           [ -z "$UNKNOWN" ] || echo "::warning::models has unknown stage(s), ignored: $UNKNOWN"
@@ -232,7 +236,7 @@ jobs:
 
           DEFAULTS='{"bugs":"opus","parity":"opus"}'
           for s in $NAMES impact validator; do
-            b="${s%_[0-9]*}"  # parity_3 takes the "parity" override and default
+            b="$s"; [[ "$s" =~ ^parity_[0-9]+$ ]] && b=parity  # shards take the "parity" override and default
             m=$(jq -r --arg s "$s" --arg b "$b" --argjson d "$DEFAULTS" \
               '.[$s] // .[$b] // $d[$b] // "sonnet"' <<< "$VALID")
             echo "MODEL_$(tr '[:lower:]-' '[:upper:]_' <<< "$s")=$m"

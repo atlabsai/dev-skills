@@ -434,8 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         "PR": args.pr,
         "PR_TITLE": str(meta.get("title") or ""),
         "FAILED_REVIEWERS": ",".join(failed),
-        # A sharded reviewer (parity_1, parity_2, ...) counts once.
-        "REVIEWER_COUNT": str(len({re.sub(r"_\d+$", "", r) for r in reviewers})),
+        # The parity shards (parity_1, parity_2, ...) count as one reviewer.
+        "REVIEWER_COUNT": str(
+            len({re.sub(r"^parity_\d+$", "parity", r) for r in reviewers})
+        ),
         "RUNTIME": str(int(time.time()) - int(started_at))
         if isinstance(started_at, int)
         else "",

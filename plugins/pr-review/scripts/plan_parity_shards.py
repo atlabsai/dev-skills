@@ -11,7 +11,7 @@ Test files are left out of the shards: parity is about product behavior, and
 a large test diff would crowd out the code it tests.
 
 Usage:
-  plan_parity_shards.py --base SHA --out DIR [--head HEAD]
+  plan_parity_shards.py --base REF --out DIR [--head HEAD]
                         [--threshold 2000] [--target 1500] [--max-shards 8]
 
 Prints the shard count to stdout. 0 means "don't shard" (the non-test diff is at or
@@ -58,7 +58,8 @@ def changed_sizes(base: str, head: str) -> dict[str, int]:
 
 
 def area_of(path: str) -> str:
-    return "/".join(path.split("/")[:AREA_DEPTH])
+    """The file's leading directories (not the file name); top-level files are their own area."""
+    return "/".join(path.split("/")[:-1][:AREA_DEPTH]) or path
 
 
 def plan(sizes: dict[str, int], target: int, max_shards: int) -> list[list[str]]:
@@ -87,7 +88,9 @@ def plan(sizes: dict[str, int], target: int, max_shards: int) -> list[list[str]]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base", required=True, help="merge-base SHA")
+    parser.add_argument(
+        "--base", required=True, help="base ref or SHA, e.g. origin/main"
+    )
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--threshold", type=int, default=2000)
@@ -95,7 +98,10 @@ def main() -> int:
     parser.add_argument("--max-shards", type=int, default=8)
     args = parser.parse_args()
 
-    sizes = changed_sizes(args.base, args.head)
+    # Diff against the merge base, like `git diff BASE...HEAD` and snapshot_base.py,
+    # so a base branch that moved on doesn't leak its own changes into the shards.
+    base = _git("merge-base", args.base, args.head).strip()
+    sizes = changed_sizes(base, args.head)
     if sum(sizes.values()) <= args.threshold:
         print(0)
         return 0
@@ -103,7 +109,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     listing = []
     for k, files in enumerate(shards, start=1):
-        diff = _git("diff", "-M", args.base, args.head, "--", *files)
+        diff = _git("diff", "-M", base, args.head, "--", *files)
         (args.out / f"{k}.diff").write_text(diff)
         lines = sum(sizes[f] for f in files)
         listing.append(f"# shard {k}: {len(files)} files, {lines} lines")

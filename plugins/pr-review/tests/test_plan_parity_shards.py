@@ -69,6 +69,19 @@ def test_areas_stay_together_and_neighbours_pack(repo: Path) -> None:
     ]
 
 
+def test_files_in_one_directory_stay_together_even_for_shallow_paths() -> None:
+    # 3-segment paths: the area is the directory, not the file.
+    sizes = {"app/a/x.py": 600, "app/b/y.py": 300, "app/b/z.py": 300}
+    shards = pp.plan(sizes, target=1000, max_shards=8)
+    assert shards == [["app/a/x.py"], ["app/b/y.py", "app/b/z.py"]]
+
+
+def test_top_level_files_are_their_own_area() -> None:
+    assert pp.area_of("setup.py") == "setup.py"
+    assert pp.area_of("src/app.ts") == "src"
+    assert pp.area_of("a/b/c/d/e.py") == "a/b/c"
+
+
 def test_an_oversized_area_is_split_file_by_file() -> None:
     sizes = {f"app/api/f{i}.py": 600 for i in range(3)}
     shards = pp.plan(sizes, target=1000, max_shards=8)
@@ -80,6 +93,23 @@ def test_shard_cap_raises_the_target_instead_of_adding_shards() -> None:
     shards = pp.plan(sizes, target=1000, max_shards=4)
     assert len(shards) == 4
     assert sorted(len(s) for s in shards) == [5, 5, 5, 5]
+
+
+def test_base_ref_is_resolved_to_the_merge_base(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    add_lines(repo, "app/api/views.py", 1200)
+    add_lines(repo, "web/src/page.tsx", 1200)
+    commit(repo)
+    git(repo, "switch", "-q", "main")
+    add_lines(repo, "other/moved/on.py", 5000)  # main moves on after the branch point
+    commit(repo)
+    git(repo, "switch", "-q", "feature")
+    out = repo.parent / "shards"
+    sys.argv = ["plan", "--base", "main", "--out", str(out)]
+    pp.main()
+    assert capsys.readouterr().out.strip() == "2"
+    assert "other/moved" not in (out / "SHARDS.txt").read_text()
 
 
 def test_small_diff_is_not_sharded(
