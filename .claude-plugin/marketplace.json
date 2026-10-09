@@ -12,6 +12,13 @@
       "source": "./plugins/pr-review",
       "category": "development",
       "license": "MIT"
+    },
+    {
+      "name": "pr-band",
+      "description": "Shows the current branch's pull request above the prompt: number, title, +/- lines and a CI status dot, with a hover card and refresh. Needs the GitHub CLI.",
+      "source": "./plugins/pr-band",
+      "category": "development",
+      "license": "MIT"
     }
   ]
 }
