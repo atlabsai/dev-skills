@@ -19,6 +19,13 @@
       "source": "./plugins/pr-band",
       "category": "development",
       "license": "MIT"
+    },
+    {
+      "name": "autofix-inline-comments",
+      "description": "For the desktop app's Auto-fix: delivers the PR's unresolved inline review threads that Auto-fix missed, and signs every PR comment Claude posts from your account so its replies are not read back as your feedback. Needs the GitHub CLI.",
+      "source": "./plugins/autofix-inline-comments",
+      "category": "development",
+      "license": "MIT"
     }
   ]
 }

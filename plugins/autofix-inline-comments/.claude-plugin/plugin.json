@@ -1,0 +1,32 @@
+{
+  "name": "autofix-inline-comments",
+  "version": "0.1.0",
+  "description": "While Auto-fix is on for the session's PR, hands Claude the PR's unresolved inline review threads that Auto-fix did not deliver, and signs every PR comment Claude posts from your account so the two can be told apart.",
+  "author": {
+    "name": "Atlabs"
+  },
+  "homepage": "https://github.com/atlabsai/dev-skills",
+  "repository": "https://github.com/atlabsai/dev-skills",
+  "keywords": [
+    "pull-request",
+    "github",
+    "code-review",
+    "auto-fix",
+    "mod"
+  ],
+  "license": "MIT",
+  "userConfig": {
+    "pollMinutes": {
+      "type": "number",
+      "title": "Poll interval (minutes)",
+      "description": "How often to check the PR for new inline review comments while Auto-fix is on.",
+      "default": 3
+    },
+    "ignoreAuthors": {
+      "type": "string",
+      "title": "Ignored authors",
+      "description": "Comma-separated GitHub logins whose threads are never surfaced (a [bot] suffix is optional).",
+      "default": "atlabs-ciel[bot]"
+    }
+  }
+}
