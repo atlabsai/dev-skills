@@ -44,6 +44,12 @@ function scanOnce($: EngineInterface, config: Config): Promise<Scan | undefined>
 const UNSIGNABLE = `This command posts a GitHub comment from the user's account without Claude Code's footer, in a form the autofix-inline-comments guard cannot sign itself (the body comes from a variable, a pipe, a GraphQL query string, or a file this same command writes). End every comment body with this line and run it again: ${SIGNATURE_LINE}`
 const SIGNED_NOTE = `The autofix-inline-comments guard appended Claude Code's footer (${SIGNATURE_LINE}) to the comment this command posted.`
 
+// A CI job (a review bot in GitHub Actions) posts as its own bot account,
+// never under the person's login: neither the guard nor the poller is for it.
+async function isCi($: EngineInterface): Promise<boolean> {
+  return (await $.env.get('GITHUB_ACTIONS')) === 'true'
+}
+
 // Appends the footer to a body file the post reads; false when it cannot.
 async function signBodyFile($: EngineInterface, file: BodyFile): Promise<boolean> {
   const text = await $.fs.read(file.path)
@@ -136,7 +142,7 @@ export const register: Register = (on, options) => {
   // body file where the command's shape allows, the command refused where not.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const plan = planSigning(e.command)
-    if (plan.kind === 'pass') return next(e)
+    if (plan.kind === 'pass' || (await isCi($))) return next(e)
     if (plan.kind === 'block') return { deny: UNSIGNABLE }
     for (const file of plan.files) {
       if (!(await signBodyFile($, file))) return { deny: UNSIGNABLE }
@@ -148,6 +154,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    if (await isCi($)) return started
     await $.command.register({
       name: COMMAND,
       description: 'Fetch the unresolved inline review threads on this session\'s PR now.',

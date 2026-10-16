@@ -45,6 +45,10 @@ Covered commands: `gh pr comment`, `gh issue comment`, `gh pr review` with a
 body, `gh api` writes to comment and review endpoints, and GraphQL comment
 mutations. Comments posted another way (`curl`, an MCP tool) are not checked.
 
+Under GitHub Actions (`GITHUB_ACTIONS=true`) the mod does nothing: a CI job
+posts as its own bot account, never under your login, so its comments are left
+as written.
+
 ## Load it
 
 autofix-inline-comments is a [mod](https://code.claude.com/docs/en/plugins/mods/overview),

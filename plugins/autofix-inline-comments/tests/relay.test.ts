@@ -46,6 +46,7 @@ function world(on: On, state: { isAutoFixOn: boolean; threads: FakeThread[] }) {
   const ghCalls: string[][] = []
   const clock = mock.clock(on)
   mock.store(on)
+  mock.env(on, {})
   on('tool.call', { tool: 'mcp__ccd_pr__get_status' }, () => {
     const text = JSON.stringify({ bound: true, pr: { url: PR_URL }, monitor: { auto_fix: state.isAutoFixOn } })
     return { result: text, text }
@@ -134,8 +135,9 @@ test('an Auto-fix wake carries every unresolved inline thread as context', async
 })
 
 // What reaches Bash, and the files the guard reads and writes, beneath it.
-function shell(on: On, files: Record<string, string> = {}) {
+function shell(on: On, files: Record<string, string> = {}, env: Record<string, string> = {}) {
   const ran: string[] = []
+  mock.env(on, env)
   on('tool.call', { tool: 'Bash' }, ($, e) => {
     ran.push(e.command)
     return { result: { stdout: '', stderr: '', interrupted: false }, text: '' }
@@ -168,4 +170,18 @@ test('the guard signs an inline body, a heredoc and a body file, and blocks what
   await $.tool.call({ tool: 'Bash', command: 'gh api repos/acme/app/pulls/12/comments --paginate' })
   await $.tool.call({ tool: 'Bash', command: `gh pr comment 12 --body "Thanks.\n\n${SIGNED}"` })
   expect(ran.slice(3)).toEqual(['gh api repos/acme/app/pulls/12/comments --paginate', `gh pr comment 12 --body "Thanks.\n\n${SIGNED}"`])
+})
+
+test('in GitHub Actions the guard leaves a bot\'s comment posts alone', async ($, on) => {
+  const { ran } = shell(on, {}, { GITHUB_ACTIONS: 'true' })
+  await $.tool.call({ tool: 'Bash', command: 'gh pr comment 12 --body "$REVIEW"' })
+  await $.tool.call({ tool: 'Bash', command: "gh pr comment 12 --body 'Review: looks fine.'" })
+  expect(ran).toEqual(['gh pr comment 12 --body "$REVIEW"', "gh pr comment 12 --body 'Review: looks fine.'"])
+})
+
+test('a heredoc that only mentions gh in its text is not a post', async ($, on) => {
+  const { ran } = shell(on)
+  const command = `cat > notes.md <<'EOF'\nRun gh pr comment 12 --body "$X" to reply.\nEOF`
+  await $.tool.call({ tool: 'Bash', command })
+  expect(ran).toEqual([command])
 })

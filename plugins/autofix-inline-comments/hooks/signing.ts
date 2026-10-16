@@ -326,14 +326,34 @@ function looksLikeCommentPost(command: string): boolean {
   return isWrite && COMMENT_ENDPOINT.test(command)
 }
 
+// The command with each heredoc's body taken out: text a heredoc writes (a
+// script, a doc that mentions gh) is not a command the shell runs.
+function withoutHeredocBodies(command: string): string {
+  let out = ''
+  let at = 0
+  for (const heredoc of command.matchAll(HEREDOC)) {
+    if (heredoc.index < at) continue
+    const lineEnd = command.indexOf('\n', heredoc.index)
+    if (lineEnd < 0) break
+    const [, dash, , delimiter] = heredoc
+    const terminator = new RegExp(`^${dash ? '\\t*' : ''}${delimiter}$`, 'm')
+    const found = terminator.exec(command.slice(lineEnd + 1))
+    if (!found) break
+    out += command.slice(at, lineEnd + 1)
+    at = lineEnd + 1 + found.index
+  }
+  return out + command.slice(at)
+}
+
 function planHeredoc(command: string): SigningPlan {
-  if (!looksLikeCommentPost(command)) return { kind: 'pass' }
+  const shellText = withoutHeredocBodies(command)
+  if (!looksLikeCommentPost(shellText)) return { kind: 'pass' }
   const heredocs = [...command.matchAll(HEREDOC)]
   if (heredocs.length !== 1) return { kind: 'block' }
   const heredoc = heredocs[0]!
   const lineStart = command.lastIndexOf('\n', heredoc.index) + 1
   const lineEnd = command.indexOf('\n', heredoc.index)
-  if (lineEnd < 0 || !feedsBody(command, command.slice(lineStart, lineEnd))) return { kind: 'block' }
+  if (lineEnd < 0 || !feedsBody(shellText, command.slice(lineStart, lineEnd))) return { kind: 'block' }
 
   const [, dash, , delimiter] = heredoc
   const terminator = new RegExp(`^${dash ? '\\t*' : ''}${delimiter}$`, 'm')
