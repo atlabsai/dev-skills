@@ -166,6 +166,21 @@ test('a slow scan lets the prompt through bare and delivers the comments on its 
   expect(submitted[1]).toContain('Too slow?')
 })
 
+test('a burst of prompts during a slow scan delivers the comments once', async ($, on) => {
+  const state = { isAutoFixOn: true, ghDelayMs: 30_000, threads: [{ id: 'T1', comments: [{ id: 1, login: 'me', body: 'Once only.' }] }] }
+  const { submitted, ghCalls, clock } = world(on, state)
+  const sent = ['One.', 'Two.', 'Three.'].map(text => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } }))
+  await clock.advance(4_000)
+  await Promise.all(sent)
+  expect(submitted).toEqual(['One.', 'Two.', 'Three.'])
+
+  // The scans run one at a time; only the first finds the comment new.
+  await clock.advance(3 * 30_000)
+  expect(ghCalls.length).toBe(3)
+  expect(submitted.length).toBe(4)
+  expect(submitted[3]).toContain('Once only.')
+})
+
 test('nothing is fetched while Auto-fix is off', async ($, on) => {
   const state = { isAutoFixOn: false, threads: [{ id: 'T1', comments: [{ id: 1, login: 'reviewer', body: 'Hi.' }] }] }
   const { submitted, ghCalls, clock } = world(on, state)
