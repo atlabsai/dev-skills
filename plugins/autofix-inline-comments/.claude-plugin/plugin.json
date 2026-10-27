@@ -1,6 +1,6 @@
 {
   "name": "autofix-inline-comments",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "While Auto-fix is on for the session's PR, hands Claude the PR's unresolved inline review threads that Auto-fix did not deliver, and signs every PR comment Claude posts from your account so the two can be told apart.",
   "author": {
     "name": "Atlabs"

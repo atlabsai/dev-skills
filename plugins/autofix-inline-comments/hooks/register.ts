@@ -16,6 +16,9 @@ import { CLAUDE_SIGNATURE, SIGNATURE_LINE, planSigning, signJsonPayload, signTex
 const COMMAND = 'inline-review'
 const CI_MONITOR_EVENT = /<ci-monitor-event\b/
 const MAX_PAGES = 10
+// How long a prompt waits on the scan before it goes on without the threads.
+const PROMPT_SCAN_MS = 4_000
+const NEW_COMMENTS = 'New inline review comments that Auto-fix did not deliver'
 
 type Config = Omit<SurfaceRules, 'viewer'>
 
@@ -39,6 +42,24 @@ let inFlight: Promise<Scan | undefined> = Promise.resolve(undefined)
 function scanOnce($: EngineInterface, config: Config): Promise<Scan | undefined> {
   inFlight = inFlight.catch(() => undefined).then(() => scan($, config))
   return inFlight
+}
+
+// The scan, or undefined once `ms` pass first; the scan itself runs on.
+function within<T>($: EngineInterface, ms: number, work: Promise<T>): Promise<T | undefined> {
+  return new Promise(resolve => {
+    const timer = $.clock.after(ms, () => resolve(undefined))
+    const settle = (value: T | undefined) => {
+      timer.cancel()
+      resolve(value)
+    }
+    work.then(settle, () => settle(undefined))
+  })
+}
+
+// Sends the threads with new comments as a turn of their own.
+async function deliver($: EngineInterface, found: Scan | undefined): Promise<void> {
+  if (!found || found.fresh.length === 0) return
+  await $.prompt.submit({ text: describeThreads(found.pr, found.fresh, NEW_COMMENTS) })
 }
 
 const UNSIGNABLE = `This command posts a GitHub comment from the user's account without Claude Code's footer, in a form the autofix-inline-comments guard cannot sign itself (the body comes from a variable, a pipe, a GraphQL query string, or a file this same command writes). End every comment body with this line and run it again: ${SIGNATURE_LINE}`
@@ -159,23 +180,30 @@ export const register: Register = (on, options) => {
       name: COMMAND,
       description: 'Fetch the unresolved inline review threads on this session\'s PR now.',
     })
-    $.clock.every(pollMs, async () => {
-      const found = await scanOnce($, config)
-      if (!found || found.fresh.length === 0) return
-      await $.prompt.submit({
-        text: describeThreads(found.pr, found.fresh, 'New inline review comments that Auto-fix did not deliver'),
-      })
-    })
+    // A session the app paused and resumed polls at once, not a period later.
+    const poll = async () => deliver($, await scanOnce($, config))
+    $.clock.after(0, poll)
+    $.clock.every(pollMs, poll)
     return started
   })
 
-  // Every Auto-fix wake also carries the PR's unresolved inline threads, so
-  // the turn that answers CI or a conflict sees them too.
+  // Whatever prompt starts a turn carries the inline comments that landed
+  // since the last scan, so a session resumed by any message sees them before
+  // it answers. Every Auto-fix wake carries all the unresolved threads, so the
+  // turn that answers CI or a conflict sees them too. A scan slower than
+  // PROMPT_SCAN_MS lets the prompt through bare and delivers on its own.
   on('prompt.submit', async ($, e, next) => {
-    if (!CI_MONITOR_EVENT.test(e.text)) return next(e)
-    const found = await scanOnce($, config)
-    if (!found || found.unresolved.length === 0) return next(e)
-    const context = describeThreads(found.pr, found.unresolved, 'Unresolved inline review threads')
+    if (e.origin.kind === 'plugin' && e.origin.name === $.plugin.name) return next(e)
+    const scanning = scanOnce($, config)
+    const found = await within($, PROMPT_SCAN_MS, scanning)
+    if (!found) {
+      void scanning.then(late => deliver($, late)).catch(() => undefined)
+      return next(e)
+    }
+    const isWake = CI_MONITOR_EVENT.test(e.text)
+    const threads = isWake ? found.unresolved : found.fresh
+    if (threads.length === 0) return next(e)
+    const context = describeThreads(found.pr, threads, isWake ? 'Unresolved inline review threads' : NEW_COMMENTS)
     return next({ ...e, context: [...(e.context ?? []), context] })
   }).catch(($, e, next) => next(e))
 

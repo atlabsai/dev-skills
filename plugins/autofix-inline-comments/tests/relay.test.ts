@@ -41,7 +41,7 @@ function graphqlPage(threads: FakeThread[]): string {
 }
 
 // The world beneath the plugin: the PR monitor, gh, and the session's sinks.
-function world(on: On, state: { isAutoFixOn: boolean; threads: FakeThread[] }) {
+function world(on: On, state: { isAutoFixOn: boolean; threads: FakeThread[]; ghDelayMs?: number }) {
   const submitted: string[] = []
   const ghCalls: string[][] = []
   const clock = mock.clock(on)
@@ -51,8 +51,9 @@ function world(on: On, state: { isAutoFixOn: boolean; threads: FakeThread[] }) {
     const text = JSON.stringify({ bound: true, pr: { url: PR_URL }, monitor: { auto_fix: state.isAutoFixOn } })
     return { result: text, text }
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     ghCalls.push([...e.argv])
+    if (state.ghDelayMs) await clock.sleep(state.ghDelayMs)
     return { value: { exitCode: 0, stdout: graphqlPage(state.threads), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -116,13 +117,78 @@ test('your own comments surface; signed replies under your login do not', async 
   expect(submitted[1]).toContain('No, use a union.')
 })
 
+test('a session that starts or resumes catches up at once, not a poll period later', async ($, on) => {
+  const state = { isAutoFixOn: true, threads: [{ id: 'T1', comments: [{ id: 1, login: 'me', body: 'Use the helper.' }] }] }
+  const { submitted, clock } = world(on, state)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  await clock.settle()
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('Use the helper.')
+
+  await clock.advance(POLL_MS)
+  expect(submitted.length).toBe(1)
+})
+
+test('any prompt carries the inline comments that landed since the last scan, once', async ($, on) => {
+  const state: { isAutoFixOn: boolean; threads: FakeThread[] } = {
+    isAutoFixOn: true,
+    threads: [{ id: 'T1', comments: [{ id: 1, login: 'me', body: 'Drop this branch.' }] }],
+  }
+  const { submitted, clock } = world(on, state)
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
+  // The comment lands while the session is paused, before any poll runs.
+  await $.prompt.submit({ text: 'Any news?', wait: false, origin: { kind: 'composer' } })
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('Any news?')
+  expect(submitted[0]).toContain('Drop this branch.')
+
+  // Seen now: neither the poll nor the next prompt sends it again.
+  await clock.advance(POLL_MS)
+  await $.prompt.submit({ text: 'Carry on.', wait: false, origin: { kind: 'composer' } })
+  expect(submitted.length).toBe(2)
+  expect(submitted[1]).toBe('Carry on.')
+
+  state.threads[0]!.comments.push({ id: 2, login: 'reviewer', body: 'Agreed.' })
+  await $.prompt.submit({ text: 'And now?', wait: false, origin: { kind: 'composer' } })
+  expect(submitted[2]).toContain('Agreed.')
+})
+
+test('a slow scan lets the prompt through bare and delivers the comments on its own', async ($, on) => {
+  const state = { isAutoFixOn: true, ghDelayMs: 30_000, threads: [{ id: 'T1', comments: [{ id: 1, login: 'me', body: 'Too slow?' }] }] }
+  const { submitted, clock } = world(on, state)
+  const sent = $.prompt.submit({ text: 'Hello.', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(4_000)
+  await sent
+  expect(submitted).toEqual(['Hello.'])
+
+  await clock.advance(30_000)
+  expect(submitted.length).toBe(2)
+  expect(submitted[1]).toContain('Too slow?')
+})
+
+test('a burst of prompts during a slow scan delivers the comments once', async ($, on) => {
+  const state = { isAutoFixOn: true, ghDelayMs: 30_000, threads: [{ id: 'T1', comments: [{ id: 1, login: 'me', body: 'Once only.' }] }] }
+  const { submitted, ghCalls, clock } = world(on, state)
+  const sent = ['One.', 'Two.', 'Three.'].map(text => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } }))
+  await clock.advance(4_000)
+  await Promise.all(sent)
+  expect(submitted).toEqual(['One.', 'Two.', 'Three.'])
+
+  // The scans run one at a time; only the first finds the comment new.
+  await clock.advance(3 * 30_000)
+  expect(ghCalls.length).toBe(3)
+  expect(submitted.length).toBe(4)
+  expect(submitted[3]).toContain('Once only.')
+})
+
 test('nothing is fetched while Auto-fix is off', async ($, on) => {
   const state = { isAutoFixOn: false, threads: [{ id: 'T1', comments: [{ id: 1, login: 'reviewer', body: 'Hi.' }] }] }
   const { submitted, ghCalls, clock } = world(on, state)
   await $.session.start({ cwd: '/repo', surface: null, isInteractive: true })
   await clock.advance(POLL_MS)
+  await $.prompt.submit({ text: 'Hi.', wait: false, origin: { kind: 'composer' } })
   expect(ghCalls.length).toBe(0)
-  expect(submitted.length).toBe(0)
+  expect(submitted).toEqual(['Hi.'])
 })
 
 test('an Auto-fix wake carries every unresolved inline thread as context', async ($, on) => {

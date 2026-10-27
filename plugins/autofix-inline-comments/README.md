@@ -7,14 +7,23 @@ threads. This mod fetches them itself and hands them to Claude.
 ## What it does
 
 **Delivers inline review threads.** While Auto-fix is on for the session's PR
-(read from the app's PR monitor), the mod checks the PR every 3 minutes with
-`gh api graphql`. When an unresolved inline thread gets a comment Claude has not
-seen, it sends Claude the thread: file and line, links, and the comments.
-Claude is asked to fix each one, or to reply on the thread saying why not. Each
-Auto-fix wake (`<ci-monitor-event>`) also carries every unresolved inline
-thread, so the turn that handles a CI failure sees the reviews too. Resolved
-threads, threads started by an ignored author, and threads with nothing new
-are skipped. `/inline-review` runs the check right away.
+(read from the app's PR monitor), the mod checks the PR with `gh api graphql`
+as the session starts or resumes, then every 3 minutes. When an unresolved
+inline thread gets a comment Claude has not seen, it sends Claude the thread:
+file and line, links, and the comments. Claude is asked to fix each one, or to
+reply on the thread saying why not. Resolved threads, threads started by an
+ignored author, and threads with nothing new are skipped. `/inline-review` runs
+the check right away.
+
+The desktop app pauses idle sessions, and a paused session runs no checks.
+So every prompt that starts a turn is checked too: threads with comments
+Claude has not seen ride along with it as context, so whatever message resumes
+the session (yours, an Auto-fix wake, another session's) carries the comments
+that landed while it was paused. Each Auto-fix wake (`<ci-monitor-event>`)
+carries every unresolved inline thread, so the turn that handles a CI failure
+sees the reviews too. A prompt waits at most 4 seconds for the check; past
+that it goes through on its own, and the threads follow as a message of their
+own once the check finishes.
 
 **Signs Claude's comments.** Claude posts PR comments under your GitHub login,
 so the mod has to tell its replies from yours. Every comment-posting `gh`
