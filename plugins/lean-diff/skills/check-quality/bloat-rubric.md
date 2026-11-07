@@ -14,6 +14,7 @@ The rules below are generic. Every repo adds its own, and the repo's always win:
   - `## Verify` — the lint/typecheck commands to run after edits, and whether to run tests.
   - `## Scope` — how the team sizes PRs (extends the scope audit).
   - `## Exempt comments` — comments or docstrings a check reads, exempt from §4.
+  - `## Reuse` — shared helpers and directories to search before accepting a new one.
 
 Where no overlay names them, take the lint commands from the repo's instructions, then
 its tooling (`package.json` scripts, `pre-commit` config, `Makefile` / `justfile`).

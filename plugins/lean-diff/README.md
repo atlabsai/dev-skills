@@ -41,6 +41,9 @@ The rubric is generic. Your repo adds its own in two places, and they win:
 
 ## Exempt comments
 - Migration docstrings: the release tooling reads them.
+
+## Reuse
+- HTTP calls go through `web/src/api/client.ts`; shared dialogs live in `web/src/ui/`.
 ```
 
 Without a `## Verify` section, the lint commands come from your instructions, then your

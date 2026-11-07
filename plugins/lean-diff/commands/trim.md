@@ -36,7 +36,7 @@ Read the full diff, then the touched files for context. Look for, in order of ty
 
    **Pass 2 — search each entry three ways.** A near-match under a different name still counts; stop at the first genuine hit.
    - **By name** — the symbol and obvious synonyms (`downloadX` / `saveX` / `exportX`).
-   - **By intent** — the behavior, not the label (`debounce`, `formatCurrency`, `retry`, `apiRequest`), plus sibling directories (`utils`, `hooks`, `components`, `services`) and barrel exports.
+   - **By intent** — the behavior, not the label (`debounce`, `formatCurrency`, `retry`, `apiRequest`), plus sibling directories (`utils`, `hooks`, `components`, `services`), barrel exports, and everything the overlay's `## Reuse` lists.
    - **By body tokens** — grep distinctive identifiers from inside the new symbol's *implementation*: API calls, constants, regexes, DOM methods. A new blob-download helper is invisible to a search for "download" but obvious to a search for `createObjectURL`.
 
    Prefer wiring into the existing thing — but only on a genuine behavioral match. Close-but-not-identical goes under "considered but kept" with the difference.
