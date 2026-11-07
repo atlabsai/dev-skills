@@ -26,6 +26,13 @@
       "source": "./plugins/autofix-inline-comments",
       "category": "development",
       "license": "MIT"
+    },
+    {
+      "name": "lean-diff",
+      "description": "Shrink a branch's diff without cutting scope: parallel audits for unneeded file changes, no-signal and overlapping tests, long comments and overengineering (measured by call sites). Applies the obvious fixes, asks about the rest, then commits.",
+      "source": "./plugins/lean-diff",
+      "category": "development",
+      "license": "MIT"
     }
   ]
 }
