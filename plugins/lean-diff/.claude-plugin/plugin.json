@@ -1,0 +1,17 @@
+{
+  "name": "lean-diff",
+  "version": "1.0.0",
+  "description": "Shrink a branch's diff without cutting scope: check-quality runs four parallel audits (scope, tests, comments, overengineering); trim cuts line count. Both apply the obvious fixes, ask about the rest, then commit.",
+  "author": {
+    "name": "Atlabs"
+  },
+  "homepage": "https://github.com/atlabsai/dev-skills",
+  "repository": "https://github.com/atlabsai/dev-skills",
+  "keywords": [
+    "code-quality",
+    "pull-request",
+    "refactoring",
+    "tests"
+  ],
+  "license": "MIT"
+}
